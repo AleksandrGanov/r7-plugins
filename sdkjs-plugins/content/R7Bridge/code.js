@@ -1,8 +1,9 @@
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.2";
+    var PLUGIN_VERSION = "1.0.3";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
+    var BTN_WIDTH = "90px";
 
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
 
@@ -29,22 +30,39 @@
         el.style.background = ok ? "#e3f4e3" : "#fdeaea";
     }
 
+    // v1.0.3: человекочитаемый статус вместо сырого JSON
+    function fmtStatus(data) {
+        var parts = [];
+        if (data && typeof data.version !== "undefined") parts.push("version: " + data.version);
+        parts.push("online: " + (data && data.online ? "true" : "false"));
+        var cl = (data && data.clients) ? data.clients : [];
+        var clStr = cl.map(function (c) { return String(c).replace(/,\s+/g, "-"); }).join("-");
+        parts.push("clients: " + (clStr || "нет"));
+        return parts.join(", ");
+    }
+
     function checkStatus() {
-        log("Test: опрашиваю мост...");
+        log("Info: опрашиваю мост...");
         fetch(BRIDGE_HTTP + "/status", {
             headers: { "X-Proxy-Token-R7": TOKEN },
             cache: "no-store"
         })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (data) {
-            setStatus("мост отвечает, online=" + data.online +
-                      ", клиентов=" + (data.clients ? data.clients.length : 0), true);
-            log("status ok: " + JSON.stringify(data));
+            setStatus("мост отвечает", true);
+            log("status ok, " + fmtStatus(data));
         })
         .catch(function (e) {
             setStatus("ошибка: " + e.message, false);
             log("status fail: " + e.message);
         });
+    }
+
+    // v1.0.3: единая точка отправки — каждое исходящее сообщение видно в логе
+    function sendWS(ws, obj) {
+        var s = JSON.stringify(obj);
+        log("исходящее: " + s);
+        ws.send(s);
     }
 
     function connect() {
@@ -64,18 +82,18 @@
             try {
                 if (window.docEditor && window.docEditor.getDocumentName) docName = window.docEditor.getDocumentName();
             } catch (e) {}
-            ws.send(JSON.stringify({
+            sendWS(ws, {
                 type: "hello",
                 client: "R7Bridge",
                 version: PLUGIN_VERSION,
                 docName: docName,
                 userAgent: navigator.userAgent
-            }));
+            });
         };
         ws.onclose   = function (e) { log("WS: закрыт, код " + e.code); };
         ws.onerror   = function ()  { log("WS: ошибка соединения"); };
         ws.onmessage = function (ev) {
-            log("WS -> " + ev.data);
+            log("входящее: " + ev.data);
             routeMessage(ev.data);
         };
         window.__r7bridge_ws = ws;
@@ -111,7 +129,7 @@
     function sendResult(action, ok) {
         var ws = window.__r7bridge_ws;
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "result", action: action, ok: ok }));
+            sendWS(ws, { type: "result", action: action, ok: ok });
         }
     }
 
@@ -126,7 +144,7 @@
                 if (el.tagName === "HR") { el.style.display = "none"; continue; }
                 if (el.children.length !== 0) continue;
                 var t = norm(el.textContent);
-                if (t === "" || t === "Test" || t === "Connect" || t === "Clear") continue;
+                if (t === "" || t === "Test" || t === "Info" || t === "Connect" || t === "Clear") continue;
                 if (t.indexOf("R7 Мост") !== -1 || t.indexOf("R7Bridge") !== -1) {
                     el.style.display = "none";
                 }
@@ -134,24 +152,32 @@
         } catch (e) { log("fixHeaders: " + e.message); }
     }
 
+    // v1.0.3: кнопки одной ширины в порядке Connect / Info / Clear
+    function styleButton(b) {
+        if (!b) return;
+        b.style.width = BTN_WIDTH;
+        b.style.marginRight = "6px";
+        b.style.boxSizing = "border-box";
+    }
+
     function setupButtons() {
-        var bTest  = document.getElementById("btnCheck");
         var bConn  = document.getElementById("btnConnect");
+        var bInfo  = document.getElementById("btnCheck");
         var bClear = document.getElementById("btnClear");
 
-        if (!bTest || !bConn) {
+        if (!bConn || !bInfo) {
             // разметка без ожидаемых id — рисуем свою панель
             var panel = document.createElement("div");
             panel.id = "r7bridge_panel";
             panel.style.margin = "4px 0";
 
-            bTest = document.createElement("button");
-            bTest.id = "btnCheck"; bTest.textContent = "Test";
-            panel.appendChild(bTest);
-
             bConn = document.createElement("button");
             bConn.id = "btnConnect"; bConn.textContent = "Connect";
             panel.appendChild(bConn);
+
+            bInfo = document.createElement("button");
+            bInfo.id = "btnCheck"; bInfo.textContent = "Info";
+            panel.appendChild(bInfo);
 
             bClear = document.createElement("button");
             bClear.id = "btnClear"; bClear.textContent = "Clear";
@@ -161,7 +187,7 @@
             if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
             else document.body.appendChild(panel);
         } else {
-            bTest.textContent = "Test";
+            bInfo.textContent = "Info";
             bConn.textContent = "Connect";
             if (!bClear) {
                 bClear = document.createElement("button");
@@ -170,10 +196,34 @@
             }
         }
 
-        if (bTest)  bTest.onclick  = checkStatus;
+        // порядок кнопок в панели: Connect, Info, Clear
+        try {
+            var parent = bConn.parentNode;
+            if (parent && bInfo.parentNode === parent && bClear.parentNode === parent) {
+                parent.insertBefore(bClear, bConn.nextSibling);
+                parent.insertBefore(bInfo, bClear.nextSibling);
+            }
+        } catch (e) {}
+
+        styleButton(bConn);
+        styleButton(bInfo);
+        styleButton(bClear);
+
+        if (bInfo)  bInfo.onclick  = checkStatus;
         if (bConn)  bConn.onclick  = connect;
         if (bClear) bClear.onclick = clearLog;
-        log("кнопки готовы: Test / Connect / Clear");
+        log("кнопки готовы: Connect / Info / Clear");
+    }
+
+    // v1.0.3: высоту окна увеличиваем в 3 раза через API плагина
+    function enlargeWindow() {
+        try {
+            if (window.Asc.plugin.resizeWindow) {
+                var w = window.innerWidth;
+                var h = window.innerHeight * 3;
+                window.Asc.plugin.resizeWindow(w, h);
+            }
+        } catch (e) { log("enlargeWindow: " + e.message); }
     }
 
     window.onerror = function (msg, src, line) {
@@ -186,6 +236,7 @@
             log("плагин v" + PLUGIN_VERSION + " загружен");
             fixHeaders();
             setupButtons();
+            enlargeWindow();
             checkStatus();
         } catch (e) {
             log("ошибка инициализации: " + e.message);
