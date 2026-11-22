@@ -1,36 +1,52 @@
+// R7Bridge code.js v1.0.5
+// Изменения v1.0.5: цветная подсветка строк лога —
+// входящие сообщения светло-зелёные, исходящие светло-красные,
+// системные светло-серые.
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.3";
+    var PLUGIN_VERSION = "1.0.5";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
     var BTN_WIDTH = "90px";
 
+    // цвета лога: входящее / исходящее / системное
+    var LOG_BG_IN  = "#e3f4e3"; // светло-зелёный
+    var LOG_BG_OUT = "#fdeaea"; // светло-красный
+    var LOG_BG_SYS = "#f0f0f0"; // светло-серый
+
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
 
-    function log(msg) {
+    // v1.0.5: каждая строка лога — отдельный блок с подсветкой.
+    // kind: "in" — входящее, "out" — исходящее, остальное — системное.
+    function log(msg, kind) {
         var el = document.getElementById("log");
         if (!el) { try { console.log("-- " + msg); } catch (e) {} return; }
         el.style.whiteSpace = "pre-wrap";
         el.style.wordBreak  = "break-word";
         el.style.overflowX  = "hidden";
-        el.textContent += "-- " + msg + "\n";
+        var line = document.createElement("div");
+        line.textContent = "-- " + msg;
+        line.style.background = kind === "in" ? LOG_BG_IN :
+                                kind === "out" ? LOG_BG_OUT : LOG_BG_SYS;
+        el.appendChild(line);
         el.scrollTop = el.scrollHeight;
     }
 
     function clearLog() {
         var el = document.getElementById("log");
-        if (el) el.textContent = "";
+        if (el) el.innerHTML = "";
         log("лог очищен");
     }
 
-    function setStatus(text, ok) {
+    function setStatus(text, kind) {
         var el = document.getElementById("status");
         if (!el) return;
         el.textContent = "Статус: " + text;
-        el.style.background = ok ? "#e3f4e3" : "#fdeaea";
+        el.style.background = kind === "ok"   ? "#e3f4e3" :
+                              kind === "err"  ? "#fdeaea" : "#f0f0f0";
     }
 
-    // v1.0.3: человекочитаемый статус вместо сырого JSON
+    // человекочитаемый статус вместо сырого JSON
     function fmtStatus(data) {
         var parts = [];
         if (data && typeof data.version !== "undefined") parts.push("version: " + data.version);
@@ -49,19 +65,19 @@
         })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (data) {
-            setStatus("мост отвечает", true);
+            setStatus("мост отвечает", "ok");
             log("status ok, " + fmtStatus(data));
         })
         .catch(function (e) {
-            setStatus("ошибка: " + e.message, false);
+            setStatus("ошибка подключения", "err");
             log("status fail: " + e.message);
         });
     }
 
-    // v1.0.3: единая точка отправки — каждое исходящее сообщение видно в логе
+    // единая точка отправки — каждое исходящее сообщение видно в логе
     function sendWS(ws, obj) {
         var s = JSON.stringify(obj);
-        log("исходящее: " + s);
+        log("исходящее: " + s, "out");
         ws.send(s);
     }
 
@@ -70,14 +86,20 @@
         if (old) {
             try { old.onclose = null; old.close(); } catch (e) {}
             window.__r7bridge_ws = null;
+            setStatus("отключен", "off");
         }
         log("WS: подключаюсь к " + BRIDGE_WS);
         var ws;
         try { ws = new WebSocket(BRIDGE_WS + "?token=" + TOKEN); }
-        catch (e) { log("WS: ошибка создания сокета: " + e.message); return; }
+        catch (e) {
+            log("WS: ошибка создания сокета: " + e.message);
+            setStatus("ошибка подключения", "err");
+            return;
+        }
 
         ws.onopen = function () {
             log("WS: открыт");
+            setStatus("подключен", "ok");
             var docName = "";
             try {
                 if (window.docEditor && window.docEditor.getDocumentName) docName = window.docEditor.getDocumentName();
@@ -90,10 +112,16 @@
                 userAgent: navigator.userAgent
             });
         };
-        ws.onclose   = function (e) { log("WS: закрыт, код " + e.code); };
-        ws.onerror   = function ()  { log("WS: ошибка соединения"); };
+        ws.onclose   = function (e) {
+            log("WS: закрыт, код " + e.code);
+            setStatus("отключен", "off");
+        };
+        ws.onerror   = function ()  {
+            log("WS: ошибка соединения");
+            setStatus("ошибка подключения", "err");
+        };
         ws.onmessage = function (ev) {
-            log("входящее: " + ev.data);
+            log("входящее: " + ev.data, "in");
             routeMessage(ev.data);
         };
         window.__r7bridge_ws = ws;
@@ -133,7 +161,7 @@
         }
     }
 
-    // v1.0.2: дублирующие надписи внутри страницы скрываем целиком,
+    // дублирующие надписи внутри страницы скрываем целиком,
     // разделительные линии (hr) тоже убираем
     function fixHeaders() {
         try {
@@ -152,7 +180,7 @@
         } catch (e) { log("fixHeaders: " + e.message); }
     }
 
-    // v1.0.3: кнопки одной ширины в порядке Connect / Info / Clear
+    // кнопки одной ширины в порядке Connect / Info / Clear
     function styleButton(b) {
         if (!b) return;
         b.style.width = BTN_WIDTH;
@@ -215,7 +243,7 @@
         log("кнопки готовы: Connect / Info / Clear");
     }
 
-    // v1.0.3: высоту окна увеличиваем в 3 раза через API плагина
+    // высоту окна увеличиваем в 3 раза через API плагина
     function enlargeWindow() {
         try {
             if (window.Asc.plugin.resizeWindow) {
