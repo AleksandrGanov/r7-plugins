@@ -1,4 +1,14 @@
-// R7Bridge code.js v1.0.17
+// R7Bridge code.js v1.0.19
+// Изменения v1.0.19 (пересборка на базе реального v1.0.17 — чекбокса в нём не было):
+// - добавлен чекбокс "выводить json в строку" под окном лога, по умолчанию включён;
+// - при включённой галочке любой json в логе плагина выводится в одну строку:
+//   без скобок и кавычек, пары "ключ: значение" через запятую (вложенные объекты
+//   и массивы разворачиваются рекурсивно, json внутри строк — тоже);
+// - не-json текст выводится как есть;
+// - состояние галочки уходит мосту: поле flatten в hello и сообщение
+//   {"type":"flatten","value":true/false} при каждом переключении;
+// - при снятой галочке json выводится в формате json как раньше;
+// - высота лога calc(100vh - 112px) вместо calc(100vh - 90px) — место отдано чекбоксу.
 // Изменения v1.0.17 (проверка и правка версии 1.0.16):
 // - снята оговорка прошлой версии: Api.GetFullName() подтверждён и для текстового
 //   редактора (есть в Api-классе document API), основной способ имени — рабочий;
@@ -22,7 +32,7 @@
 // компактная строка статуса с подсветкой по состоянию (v1.0.7),
 // версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.17";
+    var PLUGIN_VERSION = "1.0.19";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -38,7 +48,38 @@
     var ST_BG_OFF = "#f0f0f0"; // светло-серая подсветка — "отключен"
     var ST_BG_ERR = "#fdeaea"; // светло-красная подсветка — "ошибка подключения"
 
+    // режим вывода json в лог: галочка "выводить json в строку"
+    var FLATTEN_DEFAULT = true;          // по умолчанию галочка установлена
+    var flattenMode = FLATTEN_DEFAULT;   // текущее состояние галочки
+
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
+
+    // разворачивает json в одну строку: {"a":1,"b":{"c":2}} -> "a: 1, b: c: 2".
+    // Не-json (например, "R7Bridge v1.2.8 connected") возвращается как есть.
+    function flattenValue(v) {
+        if (typeof v === "string" && v !== "") {
+            try {
+                var inner = JSON.parse(v);
+                if (inner !== null && typeof inner === "object") return flattenValue(inner);
+            } catch (e) { /* обычная строка */ }
+            return v;
+        }
+        if (v === null || typeof v !== "object") return String(v);
+        if (Array.isArray(v)) return v.map(flattenValue).join(", ");
+        var parts = [];
+        for (var k in v) {
+            if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+            parts.push(k + ": " + flattenValue(v[k]));
+        }
+        return parts.join(", ");
+    }
+    function flattenJson(text) {
+        var v;
+        try { v = JSON.parse(text); } catch (e) { return text; }
+        if (v === null || typeof v !== "object") return text;
+        return flattenValue(v);
+    }
+    function fmtJson(s) { return flattenMode ? flattenJson(s) : s; }
 
     // лог занимает всё свободное место окна (с учётом кнопок и статуса)
     function styleLog() {
@@ -49,7 +90,7 @@
         el.style.overflowX  = "hidden";
         el.style.overflowY  = "auto";
         el.style.boxSizing  = "border-box";
-        el.style.height     = "calc(100vh - 90px)";
+        el.style.height     = "calc(100vh - 112px)";
         el.style.margin     = "2px 0 0 0";
     }
 
@@ -120,7 +161,7 @@
     // единая точка отправки — каждое исходящее сообщение видно в логе
     function sendWS(ws, obj) {
         var s = JSON.stringify(obj);
-        log("исходящее: " + s, "out");
+        log("исходящее: " + fmtJson(s), "out");
         ws.send(s);
     }
 
@@ -192,6 +233,7 @@
                     client: "R7Bridge",
                     version: PLUGIN_VERSION,
                     docName: docName,
+                    flatten: flattenMode,
                     userAgent: navigator.userAgent
                 });
             });
@@ -205,7 +247,7 @@
             setStatus("ошибка подключения", "err");
         };
         ws.onmessage = function (ev) {
-            log("входящее: " + ev.data, "in");
+            log("входящее: " + fmtJson(ev.data), "in");
             routeMessage(ev.data);
         };
         window.__r7bridge_ws = ws;
@@ -370,6 +412,38 @@
         btnClear.onclick = clearLog;
     }
 
+    // чекбокс "выводить json в строку" под окном лога.
+    // По умолчанию галочка установлена (FLATTEN_DEFAULT).
+    // При переключении: запись в лог плагина + сообщение мосту {"type":"flatten"}.
+    function ensureFlattenCheckbox() {
+        if (document.getElementById("chkFlatten")) return;
+        var logEl = document.getElementById("log");
+        if (!logEl) return;
+        var wrap = document.createElement("label");
+        wrap.id = "chkFlattenWrap";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.id = "chkFlatten";
+        cb.checked = flattenMode;
+        wrap.appendChild(cb);
+        wrap.appendChild(document.createTextNode(" выводить json в строку"));
+        wrap.style.fontSize   = "11px";
+        wrap.style.lineHeight = "1.4";
+        wrap.style.display    = "block";
+        wrap.style.margin     = "3px 0 4px 2px";
+        wrap.style.color      = "#333";
+        if (logEl.parentNode) logEl.parentNode.insertBefore(wrap, logEl.nextSibling);
+        else document.body.appendChild(wrap);
+        cb.onchange = function () {
+            flattenMode = cb.checked;
+            log(flattenMode ? "json: вывод в строку" : "json: в формате json");
+            var ws = window.__r7bridge_ws;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                sendWS(ws, { type: "flatten", value: flattenMode });
+            }
+        };
+    }
+
     function init() {
         // прижимаем контент к верхней кромке окна
         try {
@@ -378,6 +452,7 @@
         } catch (e) {}
         fixHeaders();
         ensureButtons();
+        ensureFlattenCheckbox();
         log("загружен, версия модуля: " + PLUGIN_VERSION);
         setStatus("отключен", "off");
     }
