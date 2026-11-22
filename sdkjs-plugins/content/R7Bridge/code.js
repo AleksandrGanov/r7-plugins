@@ -1,14 +1,16 @@
-// R7Bridge code.js v1.0.11
-// Изменения v1.0.11:
-// - кнопка "Connect" переименована в "ON"
-// - добавлена кнопка "OFF" (сразу за ON): отключение от моста,
-//   в лог пишется "-- WS: отключаюсь от ws://127.0.0.1:8791/"
-// - все 4 кнопки (ON / OFF / Test / Clear) одинаковой ширины
-// Накопленное: заголовок Плагин "R7 Bridge" (v1.0.10), лог на всю высоту окна (v1.0.8),
+// R7Bridge code.js v1.0.12
+// Изменения v1.0.12:
+// - исправлена пропавшая кнопка "ON": разметочная кнопка "Подключиться" с нашим же id
+//   пряталась fixHeaders (текст совпадал со старым) и оставалась невидимой —
+//   теперь кнопки наших id не прячутся, а всем четырём принудительно возвращается видимость
+// - заголовок, строка статуса и кнопки подняты выше: обнулены отступы body и панелей
+// - окно лога выше на 7%: зарезервированное место 130px -> 121px
+// Накопленное: 4 кнопки ON/OFF/Test/Clear одной ширины (v1.0.11),
+// заголовок Плагин "R7 Bridge" (v1.0.10), лог на всю высоту окна (v1.0.8),
 // цвет шрифта строк лога (v1.0.7), компактная строка статуса с подсветкой по состоянию (v1.0.7),
 // версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.11";
+    var PLUGIN_VERSION = "1.0.12";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -35,8 +37,8 @@
         el.style.overflowX  = "hidden";
         el.style.overflowY  = "auto";
         el.style.boxSizing  = "border-box";
-        el.style.height     = "calc(100vh - 130px)";
-        el.style.margin     = "4px 0 0 0";
+        el.style.height     = "calc(100vh - 121px)";
+        el.style.margin     = "2px 0 0 0";
     }
 
     // каждая строка лога — отдельный блок, цвет задаётся ШРИФТУ, фон не трогаем
@@ -68,7 +70,7 @@
         el.style.fontSize   = "11px";
         el.style.lineHeight = "1.2";
         el.style.padding    = "1px 6px";
-        el.style.margin     = "2px 0";
+        el.style.margin     = "1px 0";
         el.style.background = kind === "ok"  ? ST_BG_OK :
                               kind === "err" ? ST_BG_ERR : ST_BG_OFF;
     }
@@ -156,7 +158,7 @@
         window.__r7bridge_ws = ws;
     }
 
-    // v1.0.11: отключение от моста по кнопке OFF
+    // отключение от моста по кнопке OFF
     function disconnect() {
         var ws = window.__r7bridge_ws;
         if (ws) {
@@ -192,6 +194,8 @@
             sendResult("insertText", true);
         } else if (msg.action === "ping") {
             sendResult("ping", true);
+        } else {
+            log("команда не распознана: " + (msg.action || "?"));
         }
     }
 
@@ -202,7 +206,7 @@
         }
     }
 
-    // v1.0.10: заголовок окна — жирный, по высоте заголовка,
+    // заголовок окна — жирный, по высоте заголовка,
     // сверху и снизу от букв по 10% высоты заголовка
     function makeHeader() {
         var h = document.getElementById("r7bridge_header");
@@ -213,7 +217,7 @@
             h.style.fontWeight = "bold";
             h.style.fontSize   = "22px";
             h.style.lineHeight = "1.4";   // буквы ~22px, воздух по 10% сверху и снизу
-            h.style.padding    = "3px 8px";
+            h.style.padding    = "0 8px";
             h.style.margin     = "0";
             var body = document.body;
             if (body && body.firstChild) body.insertBefore(h, body.firstChild);
@@ -223,14 +227,19 @@
     }
 
     // дублирующие надписи внутри страницы скрываем целиком,
-    // разделительные линии (hr) тоже убираем
+    // разделительные линии (hr) тоже убираем.
+    // v1.0.12: кнопки наших id (btnConnect/btnDisconnect/btnTest/btnClear)
+    // не прячем никогда — раньше разметочная кнопка "Подключиться" с id btnConnect
+    // пряталась по тексту и ON пропадал с экрана
     function fixHeaders() {
         try {
+            var keepIds = { btnConnect: 1, btnDisconnect: 1, btnTest: 1, btnClear: 1 };
             var els = document.querySelectorAll("body *");
             for (var i = 0; i < els.length; i++) {
                 var el = els[i];
                 if (el.children.length !== 0) continue;
                 if (el.id === "r7bridge_header") continue;
+                if (keepIds[el.id]) continue;
                 var t = (el.textContent || "").replace(/\s+/g, " ").trim();
                 if (t === "R7 Мост" || t === "R7Bridge" ||
                     t === "Проверить мост" || t === "Подключиться" ||
@@ -243,7 +252,7 @@
         } catch (e) {}
     }
 
-    // v1.0.11: 4 кнопки одинаковой ширины — ON / OFF / Test / Clear.
+    // 4 кнопки одинаковой ширины — ON / OFF / Test / Clear.
     // Если кнопок нет в разметке — создаём их сами с обработчиками.
     function ensureButtons() {
         var btnOn    = document.getElementById("btnConnect");
@@ -256,7 +265,7 @@
             if (!panel) {
                 panel = document.createElement("div");
                 panel.id = "buttons";
-                panel.style.margin = "6px 0 2px 0";
+                panel.style.margin = "2px 0 2px 0";
                 var body = document.body;
                 var anchor = document.getElementById("r7bridge_header");
                 if (anchor && anchor.nextSibling) body.insertBefore(panel, anchor.nextSibling);
@@ -287,12 +296,16 @@
             }
         }
 
-        // выравниваем ширину и вешаем обработчики (в т.ч. если кнопки из разметки)
+        // выравниваем ширину, видимость и обработчики (в т.ч. если кнопки из разметки)
         btnOn.style.width = btnOff.style.width = btnTest.style.width = btnClear.style.width = BTN_WIDTH;
         btnOn.textContent    = "ON";
         btnOff.textContent   = "OFF";
         btnTest.textContent  = "Test";
         btnClear.textContent = "Clear";
+        btnOn.style.display    = "inline-block";
+        btnOff.style.display   = "inline-block";
+        btnTest.style.display  = "inline-block";
+        btnClear.style.display = "inline-block";
         btnOn.onclick    = connect;
         btnOff.onclick   = disconnect;
         btnTest.onclick  = checkStatus;
@@ -300,6 +313,11 @@
     }
 
     function init() {
+        // v1.0.12: прижимаем контент к верхней кромке окна
+        try {
+            document.body.style.margin   = "0";
+            document.body.style.padding  = "0";
+        } catch (e) {}
         makeHeader();
         fixHeaders();
         ensureButtons();
