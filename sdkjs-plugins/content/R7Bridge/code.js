@@ -305,8 +305,8 @@
         }
         btnOn.textContent    = "ON";
         btnOff.textContent   = "OFF";
-        btnTest.textContent  = "Test";
-        btnClear.textContent = "Clear";
+        btnTest.textContent  = "TEST";
+        btnClear.textContent = "CLEAR";
         btnOn.style.display    = "block";
         btnOff.style.display   = "block";
         btnTest.style.display  = "block";
