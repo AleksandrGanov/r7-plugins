@@ -1,14 +1,16 @@
-// R7Bridge code.js v1.0.14
-// Изменения v1.0.14:
-// - кнопки выстроены в один ряд flex-контейнером: ON слева, затем OFF, Test, Clear;
-//   у каждой кнопки равная доля, сумма ширин кнопок и трёх промежутков
-//   равна ширине окна лога (фиксированная ширина 90px убрана — из-за неё ON сваливался)
-// Накопленное: кнопки одним рядом (v1.0.13), заголовок Плагин "R7 Bridge" (v1.0.10),
+// R7Bridge code.js v1.0.15
+// Изменения v1.0.15:
+// - внутренний заголовок "Плагин \"R7 Bridge\"" полностью удалён (makeHeader убрана),
+//   верхний заголовок редактора с крестиком остаётся единственным;
+// - панель кнопок стала первым элементом окна, под ней строка статуса, под ней лог;
+// - окно лога увеличено по высоте на ~5%: высота calc(100vh - 90px) вместо
+//   calc(100vh - 121px) — место убранного заголовка отдано логу.
+// Накопленное: кнопки одним рядом, ON слева от OFF, равные ширины (v1.0.14),
 // лог на всю высоту окна (v1.0.8), цвет шрифта строк лога (v1.0.7),
 // компактная строка статуса с подсветкой по состоянию (v1.0.7),
 // версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.14";
+    var PLUGIN_VERSION = "1.0.15";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -26,7 +28,7 @@
 
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
 
-    // лог занимает всё свободное место окна (с учётом заголовка, статуса и кнопок)
+    // лог занимает всё свободное место окна (с учётом кнопок и статуса)
     function styleLog() {
         var el = document.getElementById("log");
         if (!el) return;
@@ -35,7 +37,7 @@
         el.style.overflowX  = "hidden";
         el.style.overflowY  = "auto";
         el.style.boxSizing  = "border-box";
-        el.style.height     = "calc(100vh - 121px)";
+        el.style.height     = "calc(100vh - 90px)";
         el.style.margin     = "2px 0 0 0";
     }
 
@@ -204,26 +206,6 @@
         }
     }
 
-    // заголовок окна — жирный, по высоте заголовка,
-    // сверху и снизу от букв по 10% высоты заголовка
-    function makeHeader() {
-        var h = document.getElementById("r7bridge_header");
-        if (!h) {
-            h = document.createElement("div");
-            h.id = "r7bridge_header";
-            h.textContent = "Плагин \"R7 Bridge\"";
-            h.style.fontWeight = "bold";
-            h.style.fontSize   = "22px";
-            h.style.lineHeight = "1.4";   // буквы ~22px, воздух по 10% сверху и снизу
-            h.style.padding    = "0 8px";
-            h.style.margin     = "0";
-            var body = document.body;
-            if (body && body.firstChild) body.insertBefore(h, body.firstChild);
-            else if (body) body.appendChild(h);
-        }
-        return h;
-    }
-
     // дублирующие надписи внутри страницы скрываем целиком,
     // разделительные линии (hr) тоже убираем.
     // кнопки наших id (btnConnect/btnDisconnect/btnTest/btnClear) не прячем никогда —
@@ -235,7 +217,6 @@
             for (var i = 0; i < els.length; i++) {
                 var el = els[i];
                 if (el.children.length !== 0) continue;
-                if (el.id === "r7bridge_header") continue;
                 if (keepIds[el.id]) continue;
                 var t = (el.textContent || "").replace(/\s+/g, " ").trim();
                 if (t === "R7 Мост" || t === "R7Bridge" ||
@@ -253,13 +234,16 @@
     // Ряд — flex-контейнер во всю ширину окна лога: у каждой кнопки равная доля,
     // сумма ширин кнопок и трёх промежутков равна ширине ряда (= окну лога).
     // Если кнопок нет в разметке — создаём их сами с обработчиками.
+    // Панель кнопок — первый элемент окна (заголовок внутри страницы удалён),
+    // дальше идут строка статуса и окно лога.
     function ensureButtons() {
         var btnOn    = document.getElementById("btnConnect");
         var btnOff   = document.getElementById("btnDisconnect");
         var btnTest  = document.getElementById("btnTest");
         var btnClear = document.getElementById("btnClear");
 
-        // панель кнопок — во всю ширину окна, прижата к заголовку
+        // панель кнопок — во всю ширину окна, первая в окне:
+        // вставляем перед строкой статуса, если она есть, иначе первым элементом
         var panel = document.getElementById("buttons");
         if (!panel) {
             panel = document.createElement("div");
@@ -268,8 +252,9 @@
             panel.style.boxSizing = "border-box";
             panel.style.margin    = "2px 0 2px 0";
             var body = document.body;
-            var anchor = document.getElementById("r7bridge_header");
-            if (anchor && anchor.nextSibling) body.insertBefore(panel, anchor.nextSibling);
+            var statusEl = document.getElementById("status");
+            if (statusEl && statusEl.parentNode === body) body.insertBefore(panel, statusEl);
+            else if (body && body.firstChild) body.insertBefore(panel, body.firstChild);
             else if (body) body.appendChild(panel);
         }
 
@@ -338,7 +323,6 @@
             document.body.style.margin   = "0";
             document.body.style.padding  = "0";
         } catch (e) {}
-        makeHeader();
         fixHeaders();
         ensureButtons();
         log("загружен, версия модуля: " + PLUGIN_VERSION);
