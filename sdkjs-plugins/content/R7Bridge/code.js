@@ -35,14 +35,15 @@
         });
     }
 
-    function connect() {      
-		if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-			ws.onclose = null; // чтобы не дёргал логику при закрытии
-			ws.close();
-			log("WS: сокет уже открыт, пропускаю подключение " + BRIDGE_WS);
-		}
-		
-		log("WS: подключаюсь к " + BRIDGE_WS);
+    function connect() {
+        var old = window.__r7bridge_ws;
+        if (old && (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING)) {
+            old.onclose = null; // чтобы не дёргал логику при закрытии
+            old.close();
+            log("WS: старый сокет закрыт");
+        }
+
+        log("WS: подключаюсь к " + BRIDGE_WS);
         var ws = new WebSocket(BRIDGE_WS + "?token=" + TOKEN);
         ws.onopen    = function ()    { log("WS: открыт"); };
         ws.onclose   = function (e)   { log("WS: закрыт, код " + e.code); };
