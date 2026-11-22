@@ -35,6 +35,58 @@
         });
     }
 
+    // Вставка текста в документ через Office API.
+    // Текст вшиваем в тело функции через JSON.stringify — так он безопасно
+    // проходит сериализацию callCommand (замыкания туда не переносятся).
+    function insertText(text) {
+        try {
+            if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
+                log("Ошибка: callCommand недоступен в этом окружении");
+                return;
+            }
+            var fn = new Function(
+                "return function () {" +
+                "    var oDocument = Api.GetDocument();" +
+                "    var oParagraph = Api.CreateParagraph();" +
+                "    oParagraph.AddText(" + JSON.stringify(String(text)) + ");" +
+                "    oDocument.InsertContent([oParagraph]);" +
+                "};"
+            )();
+            window.Asc.plugin.callCommand(fn, function () {
+                log("Текст вставлен в документ: " + text);
+            }, false, false);
+        } catch (e) {
+            log("Ошибка вставки: " + (e && e.message ? e.message : String(e)));
+        }
+    }
+
+    // Разбор входящих сообщений моста
+    function routeMessage(raw) {
+        var data;
+        try {
+            data = JSON.parse(raw);
+        } catch (e) {
+            return; // не JSON — уже показано в логе, молча игнорируем
+        }
+        if (!data || typeof data !== "object") return;
+
+        // Команда вставки текста: {"action":"insertText","text":"..."}
+        if (data.action === "insertText" && typeof data.text === "string") {
+            log("Команда: вставить текст");
+            insertText(data.text);
+            return;
+        }
+
+        // Ответ на пинг
+        if (data.type === "ping") {
+            var ws = window.__r7bridge_ws;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "pong" }));
+                log("Pong отправлен");
+            }
+        }
+    }
+
     function connect() {
         var old = window.__r7bridge_ws;
         if (old && (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING)) {
@@ -51,7 +103,7 @@
         };
         ws.onclose   = function (e)  { log("WS: закрыт, код " + e.code); };
         ws.onerror   = function ()   { log("WS: ошибка соединения"); };
-        ws.onmessage = function (ev) { log("WS -> " + ev.data); };
+        ws.onmessage = function (ev) { routeMessage(ev.data); };
         window.__r7bridge_ws = ws;
     }
 
