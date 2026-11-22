@@ -1,13 +1,15 @@
-// R7Bridge code.js v1.0.8
-// Изменения v1.0.8:
-// - лог растягивается на всю свободную высоту окна (calc(100vh - шапка/статус/кнопки))
-// - лишние кнопки "Проверить мост" и "Подключиться" скрываются автоматически
-// - из заголовка окна убрана версия: теперь просто "R7Bridge"
+// R7Bridge code.js v1.0.9
+// Изменения v1.0.9:
+// - восстановлены кнопки Connect / Test / Clear и их обработчики (создаются,
+//   если в разметке страницы их не оказалось)
+// - надпись "R7 Мост" и заголовок "R7Bridge" внутри окна скрываются целиком,
+//   лог/статус/кнопки смещаются на освободившееся место
+// - высота лога пересчитана под окно без заголовков
 // Накопленное: цвет шрифта строк лога (v1.0.7), компактная строка статуса с
-// подсветкой по состоянию (v1.0.7), кнопки Connect / Info / Clear одной ширины (v1.0.4),
-// версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
+// подсветкой по состоянию (v1.0.7), версия модуля в статусе (v1.0.6),
+// лог на всю свободную высоту окна (v1.0.8).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.8";
+    var PLUGIN_VERSION = "1.0.9";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -25,7 +27,7 @@
 
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
 
-    // v1.0.8: лог занимает всё свободное место окна, а не фиксированные ~150px
+    // лог занимает всё свободное место окна (минус статус и кнопки)
     function styleLog() {
         var el = document.getElementById("log");
         if (!el) return;
@@ -34,8 +36,8 @@
         el.style.overflowX  = "hidden";
         el.style.overflowY  = "auto";
         el.style.boxSizing  = "border-box";
-        el.style.height     = "calc(100vh - 90px)";
-        el.style.margin     = "4px 0 0 0";
+        el.style.height     = "calc(100vh - 60px)";
+        el.style.margin     = "2px 0 0 0";
     }
 
     // каждая строка лога — отдельный блок, цвет задаётся ШРИФТУ, фон не трогаем
@@ -85,7 +87,7 @@
     }
 
     function checkStatus() {
-        log("Info: опрашиваю мост...");
+        log("Test: опрашиваю мост...");
         fetch(BRIDGE_HTTP + "/status", {
             headers: { "X-Proxy-Token-R7": TOKEN },
             cache: "no-store"
@@ -191,7 +193,7 @@
         }
     }
 
-    // v1.0.8: скрываем лишние кнопки, пришедшие из разметки страницы
+    // лишние кнопки из разметки страницы скрываем
     function removeExtraButtons() {
         try {
             var btns = document.body.getElementsByTagName("button");
@@ -204,27 +206,67 @@
         } catch (e) {}
     }
 
-    // v1.0.8: в заголовке окна версии больше нет
-    function fixHeader() {
+    // v1.0.9: "R7 Мост" и "R7Bridge" в заголовке окна не нужны — скрываем,
+    // контент смещается на освободившееся место
+    function removeHeaders() {
         try {
             var els = document.body.getElementsByTagName("*");
             for (var i = 0; i < els.length; i++) {
                 if (els[i].children.length > 0) continue;
-                var t = (els[i].textContent || "").trim();
-                if (/^r7bridge(\s*v\.?\s*[\d.]+)?$/i.test(t) && t.toLowerCase() !== "r7bridge") {
-                    els[i].textContent = "R7Bridge";
+                var t = norm(els[i].textContent);
+                if (t === "R7 Мост" || /^R7Bridge(\s*v\.?\s*[\d.]+)?$/i.test(t)) {
+                    // прячем сам элемент и его родитель-заголовок, чтобы не осталось пустой строки
+                    els[i].style.display = "none";
+                    var p = els[i].parentNode;
+                    if (p && p !== document.body && /^(H[1-6]|HEADER|DIV)$/.test(p.tagName) &&
+                        p.textContent.trim() === t) {
+                        p.style.display = "none";
+                    }
                 }
             }
-            if (document.title && /r7bridge/i.test(document.title)) {
-                document.title = "R7Bridge";
+            if (document.title && /r7/i.test(document.title)) {
+                document.title = "";
             }
         } catch (e) {}
     }
 
-    // порядок и ширина кнопок: Connect / Info / Clear
+    // v1.0.9: если кнопок Connect / Test / Clear в разметке нет — создаём их
+    // вместе с обработчиками
+    function createButtons() {
+        try {
+            var have = {};
+            var btns = document.body.getElementsByTagName("button");
+            for (var i = 0; i < btns.length; i++) {
+                var t = (btns[i].textContent || "").trim().toLowerCase();
+                if (t === "connect" || t === "test" || t === "info" || t === "clear") have[t] = btns[i];
+            }
+            if (have.connect && have.clear && (have.test || have.info)) return; // кнопки на месте
+
+            var bar = document.createElement("div");
+            bar.style.margin = "2px 0";
+            var defs = [
+                ["Connect", connect],
+                ["Test", checkStatus],
+                ["Clear", clearLog]
+            ];
+            for (var j = 0; j < defs.length; j++) {
+                var b = document.createElement("button");
+                b.textContent = defs[j][0];
+                b.style.width  = BTN_WIDTH;
+                b.style.margin = "0 4px 0 0";
+                b.onclick = defs[j][1];
+                bar.appendChild(b);
+            }
+            var anchor = document.getElementById("status") || document.getElementById("log");
+            if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(bar, anchor);
+            else document.body.appendChild(bar);
+        } catch (e) {}
+    }
+
+    // порядок и ширина кнопок: Connect / Test / Clear
     function styleButtons() {
         try {
-            var wanted = ["connect", "info", "clear"];
+            var wanted = ["connect", "test", "info", "clear"];
             var found = {};
             var btns = document.body.getElementsByTagName("button");
             for (var i = 0; i < btns.length; i++) {
@@ -233,8 +275,9 @@
             }
             var parent = found.connect ? found.connect.parentNode : null;
             if (!parent) return;
-            for (var j = 0; j < wanted.length; j++) {
-                if (found[wanted[j]]) parent.appendChild(found[wanted[j]]);
+            var order = ["connect", "test", "info", "clear"];
+            for (var j = 0; j < order.length; j++) {
+                if (found[order[j]]) parent.appendChild(found[order[j]]);
             }
             for (var k in found) {
                 found[k].style.width = BTN_WIDTH;
@@ -244,7 +287,7 @@
 
     // навешиваем обработчики по тексту кнопки
     function wireButtons() {
-        var map = { connect: connect, info: checkStatus, clear: clearLog };
+        var map = { connect: connect, test: checkStatus, info: checkStatus, clear: clearLog };
         var btns = document.body.getElementsByTagName("button");
         for (var i = 0; i < btns.length; i++) {
             var t = (btns[i].textContent || "").trim().toLowerCase();
@@ -253,9 +296,10 @@
     }
 
     function refreshUI() {
+        removeHeaders();
         styleLog();
-        fixHeader();
         removeExtraButtons();
+        createButtons();
         styleButtons();
         wireButtons();
     }
