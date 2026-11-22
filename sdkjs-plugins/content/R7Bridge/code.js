@@ -3,9 +3,40 @@
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
 
+    // ---------- оформление: перенос строк, кнопки ----------
+    (function setupUI() {
+        var style = document.createElement("style");
+        style.textContent =
+            "#log{white-space:pre-wrap;word-wrap:break-word;overflow-x:hidden;}" +
+            ".r7btn{margin-left:6px;}";
+        document.head.appendChild(style);
+
+        var btnCheck = document.getElementById("btnCheck");
+        if (btnCheck) btnCheck.textContent = "Test";
+
+        var btnConnect = document.getElementById("btnConnect");
+        if (btnConnect) btnConnect.textContent = "Connect";
+
+        var btnClear = document.createElement("button");
+        btnClear.id = "btnClear";
+        btnClear.textContent = "Clear";
+        btnClear.className = "r7btn";
+        if (btnConnect && btnConnect.parentNode) {
+            btnConnect.parentNode.insertBefore(btnClear, btnConnect.nextSibling);
+        } else if (btnCheck && btnCheck.parentNode) {
+            btnCheck.parentNode.appendChild(btnClear);
+        }
+        btnClear.onclick = function () {
+            document.getElementById("log").textContent = "";
+        };
+    })();
+
+    // ---------- лог: каждая строка с префиксом "--" ----------
     function log(msg) {
         var el = document.getElementById("log");
-        el.textContent += msg + "\n";
+        String(msg).split("\n").forEach(function (line) {
+            el.textContent += "-- " + line + "\n";
+        });
         el.scrollTop = el.scrollHeight;
     }
 
@@ -35,62 +66,10 @@
         });
     }
 
-    // Вставка текста в документ через Office API.
-    // Текст вшиваем в тело функции через JSON.stringify — так он безопасно
-    // проходит сериализацию callCommand (замыкания туда не переносятся).
-    function insertText(text) {
-        try {
-            if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
-                log("Ошибка: callCommand недоступен в этом окружении");
-                return;
-            }
-            var fn = new Function(
-                "return function () {" +
-                "    var oDocument = Api.GetDocument();" +
-                "    var oParagraph = Api.CreateParagraph();" +
-                "    oParagraph.AddText(" + JSON.stringify(String(text)) + ");" +
-                "    oDocument.InsertContent([oParagraph]);" +
-                "};"
-            )();
-            window.Asc.plugin.callCommand(fn, function () {
-                log("Текст вставлен в документ: " + text);
-            }, false, false);
-        } catch (e) {
-            log("Ошибка вставки: " + (e && e.message ? e.message : String(e)));
-        }
-    }
-
-    // Разбор входящих сообщений моста
-    function routeMessage(raw) {
-        var data;
-        try {
-            data = JSON.parse(raw);
-        } catch (e) {
-            return; // не JSON — уже показано в логе, молча игнорируем
-        }
-        if (!data || typeof data !== "object") return;
-
-        // Команда вставки текста: {"action":"insertText","text":"..."}
-        if (data.action === "insertText" && typeof data.text === "string") {
-            log("Команда: вставить текст");
-            insertText(data.text);
-            return;
-        }
-
-        // Ответ на пинг
-        if (data.type === "ping") {
-            var ws = window.__r7bridge_ws;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "pong" }));
-                log("Pong отправлен");
-            }
-        }
-    }
-
     function connect() {
         var old = window.__r7bridge_ws;
         if (old && (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING)) {
-            old.onclose = null; // чтобы не дёргал логику при закрытии
+            old.onclose = null;
             old.close();
             log("WS: старый сокет закрыт");
         }
@@ -99,12 +78,44 @@
         var ws = new WebSocket(BRIDGE_WS + "?token=" + TOKEN);
         ws.onopen = function () {
             log("WS: открыт");
-            ws.send(JSON.stringify({ type: "hello", client: "R7Bridge" }));
+            ws.send(JSON.stringify({ type: "hello", client: "ONLYOFFICE-plugin" }));
         };
         ws.onclose   = function (e)  { log("WS: закрыт, код " + e.code); };
         ws.onerror   = function ()   { log("WS: ошибка соединения"); };
         ws.onmessage = function (ev) { routeMessage(ev.data); };
         window.__r7bridge_ws = ws;
+    }
+
+    // ---------- команды от моста ----------
+    function insertText(text) {
+        if (!window.Asc || !window.Asc.plugin || typeof window.Asc.plugin.callCommand !== "function") {
+            log("ошибка: callCommand недоступен");
+            return;
+        }
+        var payload = JSON.stringify(text);
+        window.Asc.plugin.callCommand(function (s) {
+            var doc = Api.GetDocument();
+            var paragraph = Api.CreateParagraph();
+            paragraph.AddText(s);
+            doc.InsertContent([paragraph]);
+        }, false, false, payload, function (res) {
+            log("текст вставлен" + (res ? ", результат: " + JSON.stringify(res) : ""));
+        });
+    }
+
+    function routeMessage(raw) {
+        log("WS -> " + raw);
+        var msg;
+        try { msg = JSON.parse(raw); } catch (e) { return; }
+        if (msg.action === "ping") {
+            if (window.__r7bridge_ws) window.__r7bridge_ws.send(JSON.stringify({ type: "pong" }));
+            return;
+        }
+        if (msg.action === "insertText" && typeof msg.text === "string") {
+            insertText(msg.text);
+            return;
+        }
+        log("команда не распознана: " + (msg.action || "?"));
     }
 
     window.Asc.plugin.init = function () {
