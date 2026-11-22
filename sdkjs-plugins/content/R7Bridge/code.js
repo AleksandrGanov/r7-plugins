@@ -1,5 +1,5 @@
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.1";
+    var PLUGIN_VERSION = "1.0.2";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -115,22 +115,20 @@
         }
     }
 
+    // v1.0.2: дублирующие надписи внутри страницы скрываем целиком,
+    // разделительные линии (hr) тоже убираем
     function fixHeaders() {
         try {
             var els = document.body.getElementsByTagName("*");
-            var leaf = [];
             for (var i = 0; i < els.length; i++) {
-                if (els[i].children.length !== 0) continue;
-                if (els[i].id === "log" || els[i].id === "status") continue;
-                leaf.push(els[i]);
-            }
-            var done = false;
-            for (var j = 0; j < leaf.length; j++) {
-                var t = norm(leaf[j].textContent);
+                var el = els[i];
+                if (el.id === "log" || el.id === "status") continue;
+                if (el.tagName === "HR") { el.style.display = "none"; continue; }
+                if (el.children.length !== 0) continue;
+                var t = norm(el.textContent);
                 if (t === "" || t === "Test" || t === "Connect" || t === "Clear") continue;
                 if (t.indexOf("R7 Мост") !== -1 || t.indexOf("R7Bridge") !== -1) {
-                    if (!done) { leaf[j].textContent = "R7Bridge v" + PLUGIN_VERSION; done = true; }
-                    else leaf[j].style.display = "none";
+                    el.style.display = "none";
                 }
             }
         } catch (e) { log("fixHeaders: " + e.message); }
