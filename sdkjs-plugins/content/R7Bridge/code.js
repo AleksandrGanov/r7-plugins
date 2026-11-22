@@ -1,15 +1,14 @@
-// R7Bridge code.js v1.0.9
-// Изменения v1.0.9:
-// - восстановлены кнопки Connect / Test / Clear и их обработчики (создаются,
-//   если в разметке страницы их не оказалось)
-// - надпись "R7 Мост" и заголовок "R7Bridge" внутри окна скрываются целиком,
-//   лог/статус/кнопки смещаются на освободившееся место
-// - высота лога пересчитана под окно без заголовков
-// Накопленное: цвет шрифта строк лога (v1.0.7), компактная строка статуса с
-// подсветкой по состоянию (v1.0.7), версия модуля в статусе (v1.0.6),
-// лог на всю свободную высоту окна (v1.0.8).
+// R7Bridge code.js v1.0.11
+// Изменения v1.0.11:
+// - кнопка "Connect" переименована в "ON"
+// - добавлена кнопка "OFF" (сразу за ON): отключение от моста,
+//   в лог пишется "-- WS: отключаюсь от ws://127.0.0.1:8791/"
+// - все 4 кнопки (ON / OFF / Test / Clear) одинаковой ширины
+// Накопленное: заголовок Плагин "R7 Bridge" (v1.0.10), лог на всю высоту окна (v1.0.8),
+// цвет шрифта строк лога (v1.0.7), компактная строка статуса с подсветкой по состоянию (v1.0.7),
+// версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.9";
+    var PLUGIN_VERSION = "1.0.11";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -27,7 +26,7 @@
 
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
 
-    // лог занимает всё свободное место окна (минус статус и кнопки)
+    // лог занимает всё свободное место окна (с учётом заголовка, статуса и кнопок)
     function styleLog() {
         var el = document.getElementById("log");
         if (!el) return;
@@ -36,8 +35,8 @@
         el.style.overflowX  = "hidden";
         el.style.overflowY  = "auto";
         el.style.boxSizing  = "border-box";
-        el.style.height     = "calc(100vh - 60px)";
-        el.style.margin     = "2px 0 0 0";
+        el.style.height     = "calc(100vh - 130px)";
+        el.style.margin     = "4px 0 0 0";
     }
 
     // каждая строка лога — отдельный блок, цвет задаётся ШРИФТУ, фон не трогаем
@@ -87,7 +86,7 @@
     }
 
     function checkStatus() {
-        log("Test: опрашиваю мост...");
+        log("Info: опрашиваю мост...");
         fetch(BRIDGE_HTTP + "/status", {
             headers: { "X-Proxy-Token-R7": TOKEN },
             cache: "no-store"
@@ -157,6 +156,18 @@
         window.__r7bridge_ws = ws;
     }
 
+    // v1.0.11: отключение от моста по кнопке OFF
+    function disconnect() {
+        var ws = window.__r7bridge_ws;
+        if (ws) {
+            try { ws.onclose = null; } catch (e) {}
+            try { ws.close(); } catch (e) {}
+            window.__r7bridge_ws = null;
+        }
+        log("WS: отключаюсь от " + BRIDGE_WS);
+        setStatus("отключен", "off");
+    }
+
     function insertText(text) {
         if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
             log("ошибка: callCommand недоступен");
@@ -181,8 +192,6 @@
             sendResult("insertText", true);
         } else if (msg.action === "ping") {
             sendResult("ping", true);
-        } else if (msg.action === "status") {
-            log("статус по запросу: " + fmtStatus(msg.data || null) + ".");
         }
     }
 
@@ -193,127 +202,117 @@
         }
     }
 
-    // лишние кнопки из разметки страницы скрываем
-    function removeExtraButtons() {
-        try {
-            var btns = document.body.getElementsByTagName("button");
-            for (var i = 0; i < btns.length; i++) {
-                var t = (btns[i].textContent || "").trim().toLowerCase();
-                if (t === "проверить мост" || t === "подключиться") {
-                    btns[i].style.display = "none";
-                }
-            }
-        } catch (e) {}
+    // v1.0.10: заголовок окна — жирный, по высоте заголовка,
+    // сверху и снизу от букв по 10% высоты заголовка
+    function makeHeader() {
+        var h = document.getElementById("r7bridge_header");
+        if (!h) {
+            h = document.createElement("div");
+            h.id = "r7bridge_header";
+            h.textContent = "Плагин \"R7 Bridge\"";
+            h.style.fontWeight = "bold";
+            h.style.fontSize   = "22px";
+            h.style.lineHeight = "1.4";   // буквы ~22px, воздух по 10% сверху и снизу
+            h.style.padding    = "3px 8px";
+            h.style.margin     = "0";
+            var body = document.body;
+            if (body && body.firstChild) body.insertBefore(h, body.firstChild);
+            else if (body) body.appendChild(h);
+        }
+        return h;
     }
 
-    // v1.0.9: "R7 Мост" и "R7Bridge" в заголовке окна не нужны — скрываем,
-    // контент смещается на освободившееся место
-    function removeHeaders() {
+    // дублирующие надписи внутри страницы скрываем целиком,
+    // разделительные линии (hr) тоже убираем
+    function fixHeaders() {
         try {
-            var els = document.body.getElementsByTagName("*");
+            var els = document.querySelectorAll("body *");
             for (var i = 0; i < els.length; i++) {
-                if (els[i].children.length > 0) continue;
-                var t = norm(els[i].textContent);
-                if (t === "R7 Мост" || /^R7Bridge(\s*v\.?\s*[\d.]+)?$/i.test(t)) {
-                    // прячем сам элемент и его родитель-заголовок, чтобы не осталось пустой строки
-                    els[i].style.display = "none";
-                    var p = els[i].parentNode;
-                    if (p && p !== document.body && /^(H[1-6]|HEADER|DIV)$/.test(p.tagName) &&
-                        p.textContent.trim() === t) {
-                        p.style.display = "none";
-                    }
+                var el = els[i];
+                if (el.children.length !== 0) continue;
+                if (el.id === "r7bridge_header") continue;
+                var t = (el.textContent || "").replace(/\s+/g, " ").trim();
+                if (t === "R7 Мост" || t === "R7Bridge" ||
+                    t === "Проверить мост" || t === "Подключиться" ||
+                    t.indexOf("R7Bridge v") !== -1) {
+                    el.style.display = "none";
                 }
             }
-            if (document.title && /r7/i.test(document.title)) {
-                document.title = "";
-            }
+            var hrs = document.getElementsByTagName("hr");
+            for (var k = 0; k < hrs.length; k++) hrs[k].style.display = "none";
         } catch (e) {}
     }
 
-    // v1.0.9: если кнопок Connect / Test / Clear в разметке нет — создаём их
-    // вместе с обработчиками
-    function createButtons() {
-        try {
-            var have = {};
-            var btns = document.body.getElementsByTagName("button");
-            for (var i = 0; i < btns.length; i++) {
-                var t = (btns[i].textContent || "").trim().toLowerCase();
-                if (t === "connect" || t === "test" || t === "info" || t === "clear") have[t] = btns[i];
-            }
-            if (have.connect && have.clear && (have.test || have.info)) return; // кнопки на месте
+    // v1.0.11: 4 кнопки одинаковой ширины — ON / OFF / Test / Clear.
+    // Если кнопок нет в разметке — создаём их сами с обработчиками.
+    function ensureButtons() {
+        var btnOn    = document.getElementById("btnConnect");
+        var btnOff   = document.getElementById("btnDisconnect");
+        var btnTest  = document.getElementById("btnTest");
+        var btnClear = document.getElementById("btnClear");
 
-            var bar = document.createElement("div");
-            bar.style.margin = "2px 0";
-            var defs = [
-                ["Connect", connect],
-                ["Test", checkStatus],
-                ["Clear", clearLog]
-            ];
-            for (var j = 0; j < defs.length; j++) {
+        if (!btnOn || !btnOff || !btnTest || !btnClear) {
+            var panel = document.getElementById("buttons");
+            if (!panel) {
+                panel = document.createElement("div");
+                panel.id = "buttons";
+                panel.style.margin = "6px 0 2px 0";
+                var body = document.body;
+                var anchor = document.getElementById("r7bridge_header");
+                if (anchor && anchor.nextSibling) body.insertBefore(panel, anchor.nextSibling);
+                else if (body) body.appendChild(panel);
+            }
+
+            function mkBtn(id, text, fn) {
                 var b = document.createElement("button");
-                b.textContent = defs[j][0];
-                b.style.width  = BTN_WIDTH;
+                b.id = id;
+                b.textContent = text;
+                b.style.width = BTN_WIDTH;
                 b.style.margin = "0 4px 0 0";
-                b.onclick = defs[j][1];
-                bar.appendChild(b);
+                b.style.padding = "4px 0";
+                b.style.fontSize = "13px";
+                b.onclick = fn;
+                return b;
             }
-            var anchor = document.getElementById("status") || document.getElementById("log");
-            if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(bar, anchor);
-            else document.body.appendChild(bar);
-        } catch (e) {}
-    }
 
-    // порядок и ширина кнопок: Connect / Test / Clear
-    function styleButtons() {
-        try {
-            var wanted = ["connect", "test", "info", "clear"];
-            var found = {};
-            var btns = document.body.getElementsByTagName("button");
-            for (var i = 0; i < btns.length; i++) {
-                var t = (btns[i].textContent || "").trim().toLowerCase();
-                if (wanted.indexOf(t) !== -1 && !found[t]) found[t] = btns[i];
-            }
-            var parent = found.connect ? found.connect.parentNode : null;
-            if (!parent) return;
-            var order = ["connect", "test", "info", "clear"];
-            for (var j = 0; j < order.length; j++) {
-                if (found[order[j]]) parent.appendChild(found[order[j]]);
-            }
-            for (var k in found) {
-                found[k].style.width = BTN_WIDTH;
-            }
-        } catch (e) {}
-    }
+            if (!btnOn)    btnOn    = mkBtn("btnConnect",    "ON",    connect);
+            if (!btnOff)   btnOff   = mkBtn("btnDisconnect", "OFF",   disconnect);
+            if (!btnTest)  btnTest  = mkBtn("btnTest",       "Test",  checkStatus);
+            if (!btnClear) btnClear = mkBtn("btnClear",      "Clear", clearLog);
 
-    // навешиваем обработчики по тексту кнопки
-    function wireButtons() {
-        var map = { connect: connect, test: checkStatus, info: checkStatus, clear: clearLog };
-        var btns = document.body.getElementsByTagName("button");
-        for (var i = 0; i < btns.length; i++) {
-            var t = (btns[i].textContent || "").trim().toLowerCase();
-            if (map[t]) btns[i].onclick = map[t];
+            // порядок: ON, OFF, Test, Clear
+            var order = [btnOn, btnOff, btnTest, btnClear];
+            for (var i = 0; i < order.length; i++) {
+                if (order[i].parentNode !== panel) panel.appendChild(order[i]);
+            }
         }
+
+        // выравниваем ширину и вешаем обработчики (в т.ч. если кнопки из разметки)
+        btnOn.style.width = btnOff.style.width = btnTest.style.width = btnClear.style.width = BTN_WIDTH;
+        btnOn.textContent    = "ON";
+        btnOff.textContent   = "OFF";
+        btnTest.textContent  = "Test";
+        btnClear.textContent = "Clear";
+        btnOn.onclick    = connect;
+        btnOff.onclick   = disconnect;
+        btnTest.onclick  = checkStatus;
+        btnClear.onclick = clearLog;
     }
 
-    function refreshUI() {
-        removeHeaders();
-        styleLog();
-        removeExtraButtons();
-        createButtons();
-        styleButtons();
-        wireButtons();
+    function init() {
+        makeHeader();
+        fixHeaders();
+        ensureButtons();
+        log("загружен, версия модуля: " + PLUGIN_VERSION);
+        setStatus("отключен", "off");
     }
 
-    (function init() {
-        try {
-            refreshUI();
-            log("R7Bridge v" + PLUGIN_VERSION + " загружен");
-        } catch (e) {
-            try { console.log(e); } catch (e2) {}
-        }
-        if (window.Asc && window.Asc.plugin) {
-            window.Asc.plugin.init = function () { refreshUI(); };
-            window.Asc.plugin.button = function () { this.executeCommand("close", ""); };
-        }
-    })();
+    if (window.Asc && window.Asc.plugin) {
+        window.Asc.plugin.init = init;
+        try { window.Asc.plugin.onThemeChanged = function () {}; } catch (e) {}
+    } else {
+        if (document.readyState === "complete") init();
+        else window.addEventListener("load", init);
+    }
+
 })(window, undefined);
