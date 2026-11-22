@@ -1,4 +1,16 @@
-// R7Bridge code.js v1.0.15
+// R7Bridge code.js v1.0.17
+// Изменения v1.0.17 (проверка и правка версии 1.0.16):
+// - снята оговорка прошлой версии: Api.GetFullName() подтверждён и для текстового
+//   редактора (есть в Api-классе document API), основной способ имени — рабочий;
+// - добавлена подстраховка по таймауту 2 сек: если callCommand не вернул имя,
+//   приветствие hello уходит с пустым docName (раньше hello мог не уйти вовсе);
+// - запасной способ усилен: пробуется window.docEditor и window.parent.docEditor.
+// Изменения v1.0.16:
+// - причина пустого docName: window.docEditor в контексте плагина недоступен,
+//   getDocumentName() падал в catch и имя всегда было пустым;
+// - имя документа берётся через callCommand + Api.GetFullName() (основной способ),
+//   запасной — window.docEditor.getDocumentName();
+// - hello отправляется после получения имени, при закрытом сокете — не отправляется.
 // Изменения v1.0.15:
 // - внутренний заголовок "Плагин \"R7 Bridge\"" полностью удалён (makeHeader убрана),
 //   верхний заголовок редактора с крестиком остаётся единственным;
@@ -10,7 +22,7 @@
 // компактная строка статуса с подсветкой по состоянию (v1.0.7),
 // версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.15";
+    var PLUGIN_VERSION = "1.0.17";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -112,6 +124,42 @@
         ws.send(s);
     }
 
+    // имя документа: основной способ — Api.GetFullName() внутри редактора через callCommand,
+    // запасной — window.docEditor.getDocumentName() (свой и родительского окна).
+    // callCommand: (func, isClose, isCalc, callback) — callback получает результат func.
+    function getDocName(cb) {
+        var done = false;
+        var finish = function (name) {
+            if (done) return;
+            done = true;
+            cb(String(name || "").trim());
+        };
+        var fallback = function () {
+            var n = "", de = null;
+            try {
+                if (window.docEditor && window.docEditor.getDocumentName) de = window.docEditor;
+                else if (window.parent && window.parent.docEditor &&
+                         window.parent.docEditor.getDocumentName) de = window.parent.docEditor;
+                if (de) n = de.getDocumentName();
+            } catch (e) {}
+            finish(n);
+        };
+        try {
+            if (window.Asc && window.Asc.plugin && window.Asc.plugin.callCommand) {
+                window.Asc.plugin.callCommand(new Function(
+                    "try { return Api.GetFullName() || \"\"; } catch (e) { return \"\"; }"
+                ), false, false, function (res) {
+                    if (res) finish(res); else fallback();
+                });
+            } else {
+                fallback();
+            }
+        } catch (e) {
+            fallback();
+        }
+        setTimeout(fallback, 2000);
+    }
+
     function connect() {
         var old = window.__r7bridge_ws;
         if (old) {
@@ -131,16 +179,21 @@
         ws.onopen = function () {
             log("WS: открыт");
             setStatus("подключен", "ok");
-            var docName = "";
-            try {
-                if (window.docEditor && window.docEditor.getDocumentName) docName = window.docEditor.getDocumentName();
-            } catch (e) {}
-            sendWS(ws, {
-                type: "hello",
-                client: "R7Bridge",
-                version: PLUGIN_VERSION,
-                docName: docName,
-                userAgent: navigator.userAgent
+            getDocName(function (docName) {
+                if (ws.readyState !== WebSocket.OPEN) {
+                    log("имя документа: " + (docName || "нет") +
+                        ", но сокет уже закрыт — приветствие не отправлено");
+                    return;
+                }
+                if (docName) log("имя документа: " + docName);
+                else log("имя документа получить не удалось, docName будет пустым");
+                sendWS(ws, {
+                    type: "hello",
+                    client: "R7Bridge",
+                    version: PLUGIN_VERSION,
+                    docName: docName,
+                    userAgent: navigator.userAgent
+                });
             });
         };
         ws.onclose = function (e) {
