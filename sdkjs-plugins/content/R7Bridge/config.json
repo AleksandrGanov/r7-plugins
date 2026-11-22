@@ -4,10 +4,7 @@
     "ru": "R7 Мост"
   },
   "guid": "asc.{8F3A5C21-9B47-4E6D-B2A1-77D0C4E91F58}",
-  "version": "1.0.13",
-  "var": [
-    "code.js"
-  ],
+  "version": "1.0.14",
   "variations": [
     {
       "description": "Bridge to remote monitor",
@@ -33,6 +30,9 @@
       "size": [
         400,
         945
+      ],
+      "var": [
+        "code.js"
       ]
     }
   ]
