@@ -1,0 +1,32 @@
+{
+  "name": "R7 Bridge",
+  "nameLocale": {
+    "ru": "R7 Мост"
+  },
+  "guid": "asc.{8F3A5C21-9B47-4E6D-B2A1-77D0C4E91F58}",
+  "version": "1.0.0",
+  "variations": [
+    {
+      "description": "Bridge to remote monitor",
+      "descriptionLocale": {
+        "ru": "Мост: статус и связь с внешним мониторингом"
+      },
+      "url": "index.html",
+      "icons": [
+        "resources/icon.png"
+      ],
+      "isViewer": true,
+      "EditorsSupport": [
+        "word",
+        "cell",
+        "slide"
+      ],
+      "isVisual": true,
+      "isModal": false,
+      "isInsideMode": true,
+      "initDataType": "none",
+      "initData": "",
+      "buttons": []
+    }
+  ]
+}
