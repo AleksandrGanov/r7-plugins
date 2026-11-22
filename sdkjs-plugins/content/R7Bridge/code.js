@@ -35,8 +35,14 @@
         });
     }
 
-    function connect() {
-        log("WS: подключаюсь к " + BRIDGE_WS);
+    function connect() {      
+		if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+			ws.onclose = null; // чтобы не дёргал логику при закрытии
+			ws.close();
+			log("WS: сокет уже открыт, пропускаю подключение " + BRIDGE_WS);
+		}
+		
+		log("WS: подключаюсь к " + BRIDGE_WS);
         var ws = new WebSocket(BRIDGE_WS + "?token=" + TOKEN);
         ws.onopen    = function ()    { log("WS: открыт"); };
         ws.onclose   = function (e)   { log("WS: закрыт, код " + e.code); };
