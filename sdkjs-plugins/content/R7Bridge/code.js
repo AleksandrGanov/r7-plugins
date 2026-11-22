@@ -1,6 +1,6 @@
 (function (window, undefined) {
-    var BRIDGE_HTTP = "http://127.0.0.1:8790";
-    var BRIDGE_WS   = "ws://127.0.0.1:8790/";
+    var BRIDGE_HTTP = "http://127.0.0.1:8791";
+    var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
 
     function log(msg) {
