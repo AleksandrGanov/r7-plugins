@@ -1,9 +1,10 @@
-// R7Bridge code.js v1.0.5
-// Изменения v1.0.5: цветная подсветка строк лога —
-// входящие сообщения светло-зелёные, исходящие светло-красные,
-// системные светло-серые.
+// R7Bridge code.js v1.0.6
+// Изменения v1.0.6: в строку статуса добавлена версия реально загруженного
+// модуля: "-- status ok, version: ..., online: ..., clients: ..., версия модуля: X.X.X."
+// Заодно: цветной лог (v1.0.5), три статуса с подсветкой (v1.0.5),
+// кнопки Connect / Info / Clear одной ширины (v1.0.4), окно x3 (v1.0.3).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.5";
+    var PLUGIN_VERSION = "1.0.6";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -46,7 +47,7 @@
                               kind === "err"  ? "#fdeaea" : "#f0f0f0";
     }
 
-    // человекочитаемый статус вместо сырого JSON
+    // v1.0.6: человекочитаемый статус + версия реально загруженного модуля
     function fmtStatus(data) {
         var parts = [];
         if (data && typeof data.version !== "undefined") parts.push("version: " + data.version);
@@ -54,6 +55,7 @@
         var cl = (data && data.clients) ? data.clients : [];
         var clStr = cl.map(function (c) { return String(c).replace(/,\s+/g, "-"); }).join("-");
         parts.push("clients: " + (clStr || "нет"));
+        parts.push("версия модуля: " + PLUGIN_VERSION);
         return parts.join(", ");
     }
 
@@ -65,8 +67,8 @@
         })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (data) {
-            setStatus("мост отвечает", "ok");
-            log("status ok, " + fmtStatus(data));
+            setStatus("подключен", "ok");
+            log("status ok, " + fmtStatus(data) + ".");
         })
         .catch(function (e) {
             setStatus("ошибка подключения", "err");
