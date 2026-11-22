@@ -45,10 +45,13 @@
 
         log("WS: подключаюсь к " + BRIDGE_WS);
         var ws = new WebSocket(BRIDGE_WS + "?token=" + TOKEN);
-        ws.onopen    = function ()    { log("WS: открыт"); };
-        ws.onclose   = function (e)   { log("WS: закрыт, код " + e.code); };
-        ws.onerror   = function ()    { log("WS: ошибка соединения"); };
-        ws.onmessage = function (ev)  { log("WS -> " + ev.data); };
+        ws.onopen = function () {
+            log("WS: открыт");
+            ws.send(JSON.stringify({ type: "hello", client: "R7Bridge" }));
+        };
+        ws.onclose   = function (e)  { log("WS: закрыт, код " + e.code); };
+        ws.onerror   = function ()   { log("WS: ошибка соединения"); };
+        ws.onmessage = function (ev) { log("WS -> " + ev.data); };
         window.__r7bridge_ws = ws;
     }
 
