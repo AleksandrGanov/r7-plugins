@@ -1,7 +1,7 @@
 (function (window, undefined) {
     var BRIDGE_HTTP = "http://127.0.0.1:8790";
     var BRIDGE_WS   = "ws://127.0.0.1:8790/";
-    var TOKEN = "d07ddf6b72236e28f22c683333511361d6c6b7136978a6889d1227627db31ad8";
+    var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
 
     function log(msg) {
         var el = document.getElementById("log");
