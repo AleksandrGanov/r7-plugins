@@ -1,7 +1,7 @@
-// R7Bridge code.js — Версия 1.0.34 (2026.11.24)
+// Версия 26.48.1 (2026.11.24)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.34";
+    var PLUGIN_VERSION = "26.48.1";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -395,7 +395,10 @@
         try {
             var fn = new Function("code",
                 "var R7Executor = " + R7Executor.toString() + ";\n" +
-                "return R7Executor(code);");
+                // Результат возвращается СТРОКОЙ (JSON): callCommand в Р7 надёжно
+                // передаёт в callback простые значения (имя документа строкой
+                // дошло), а объекты, похоже, теряются (callback undefined).
+                "return JSON.stringify(R7Executor(code));");
             // расширенный лог: видно, какой именно код уходит в документ
             log("исполнитель запущен, код: " + code, "sys");
 
@@ -413,13 +416,20 @@
                       " сек — документ не вернул результат" });
             }, EXEC_TIMEOUT_MS);
 
-            window.Asc.plugin.callCommand(fn, false, true, function (res) { // isCalculate=true: без него callback получает undefined (подтверждено логом 24.11)
+            window.Asc.plugin.callCommand(fn, false, true, function (res) { // isCalculate=true: без него callback получает undefined
                 if (answered) return; // ответ уже уходит таймаутом — дубль не пишем
                 answered = true;
                 clearTimeout(timer);
-                var ok = !!(res && res.ok);
+                // Исполнитель возвращает СТРОКУ (JSON) — распаковываем её.
+                // Если пришёл не-JSON — фиксируем как сбой с полным содержимым.
+                var resObj = res;
+                if (typeof res === "string") {
+                    try { resObj = JSON.parse(res); }
+                    catch (e) { resObj = { ok: false, error: "исполнитель вернул не-JSON: " + String(res).slice(0, 200) }; }
+                }
+                var ok = !!(resObj && resObj.ok);
                 if (ok) {
-                    log("исполнено: " + (res.info || "команда исполнена"), "sys");
+                    log("исполнено: " + (resObj.info || "команда исполнена"), "sys");
                 } else {
                     // расширенное логирование при неудаче: различаем все исходы.
                     // undefined/null — документ не вернул результат (частая причина:
@@ -427,16 +437,16 @@
                     // Объект — выводим его целиком: error исполнителя с именем,
                     // сообщением и стеком видно полностью.
                     var details =
-                        (res === undefined) ? "callback получил undefined — документ не вернул результат" :
-                        (res === null)      ? "callback получил null — документ не вернул результат" :
-                        "полный ответ исполнителя: " + safeJson(res);
+                        (resObj === undefined) ? "callback получил undefined — документ не вернул результат" :
+                        (resObj === null)      ? "callback получил null — документ не вернул результат" :
+                        "полный ответ исполнителя: " + safeJson(resObj);
                     log("команда не удалась: " + details +
                         " (requestId: " + (requestId || "нет") + ")", "syserr");
                 }
                 sendResult("r7command", ok, requestId,
-                           res || { ok: false,
-                                    error: (res === undefined) ? "нет ответа исполнителя (callback undefined)" :
-                                           (res === null)      ? "нет ответа исполнителя (callback null)" :
+                           resObj || { ok: false,
+                                    error: (resObj === undefined) ? "нет ответа исполнителя (callback undefined)" :
+                                           (resObj === null)      ? "нет ответа исполнителя (callback null)" :
                                            "нет ok в ответе исполнителя" });
             });
         } catch (e) {
@@ -712,6 +722,7 @@
             wrapG.id = "gapSettingWrap";
             wrapG.style.display    = "flex";
             wrapG.style.alignItems = "center";
+            wrapG.style.gap        = BTN_GAP; // зазор между лейблом и полем — ровно как между кнопками
             wrapG.style.margin     = "0 0 4px 2px";
 
             var lblG = document.createElement("span");
@@ -719,7 +730,7 @@
             lblG.style.fontSize   = "11px";
             lblG.style.lineHeight = "1.4";
             lblG.style.color      = "#333";
-            lblG.style.marginRight = "2px"; // зазор до поля 2px + 4px паддинг поля = ~6px, как между кнопками
+            lblG.style.marginRight = "0"; // зазор задаёт gap контейнера, не отступ
             wrapG.appendChild(lblG);
 
             var inpG = document.createElement("input");
@@ -728,7 +739,7 @@
             inpG.value = String(minGapSec);
             inpG.style.width    = "50px";
             inpG.style.fontSize = "11px";
-            inpG.style.padding  = "1px 4px";
+            inpG.style.padding  = "2px 0"; // без левого паддинга: зазор только от gap контейнера
             inpG.style.boxSizing = "border-box";
             // фильтр ввода: только цифры (0-9), максимум 4 знака (до 9999 сек).
             // Буквы, минус, точка и прочее вырезаются прямо при вводе.
@@ -792,6 +803,46 @@
         else el.classList.remove("log-hide-sys");
     }
 
+    // САМОПРОВЕРКА при загрузке плагина. Запускается через 500 мс после init.
+    // Тест 1a/1b: канат возврата результата через callCommand. Функция просто
+    // возвращает число 777; если callback получит 777 — канал работает.
+    // Проверяются оба режима isCalculate: false и true (в OnlyOffice данные
+    // возвращаются только при true; в Р7 поведение может отличаться).
+    // Тест 2: исполнение кода в документе — покраска ячейки A1 в жёлтый
+    // (RGB 255,255,0) с возвратом строки "done". По ячейке A1 в таблице
+    // видно, исполняется ли код вообще (побочный эффект), а по логу —
+    // доходит ли результат. Всё фиксируется в логе плагина.
+    function runSelfTests() {
+        log("самопроверка: запущена", "sys");
+        if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
+            log("самопроверка: callCommand недоступен — дальнейшие пробы не имеют смысла", "syserr");
+            return;
+        }
+        var probe = new Function("return 777;");
+        var t1a = setTimeout(function () {
+            log("самопроверка 1a (isCalculate=false): callback не пришёл за 3 сек", "syserr");
+        }, 3000);
+        window.Asc.plugin.callCommand(probe, false, false, function (res) {
+            clearTimeout(t1a);
+            log("самопроверка 1a (isCalculate=false): callback вернул " + safeJson(res),
+                res === 777 ? "sys" : "syserr");
+        });
+        var t1b = setTimeout(function () {
+            log("самопроверка 1b (isCalculate=true): callback не пришёл за 3 сек", "syserr");
+        }, 3000);
+        window.Asc.plugin.callCommand(probe, false, true, function (res) {
+            clearTimeout(t1b);
+            log("самопроверка 1b (isCalculate=true): callback вернул " + safeJson(res),
+                res === 777 ? "sys" : "syserr");
+        });
+        // тест 2: покраска A1 жёлтым + return "done" — по ячейке видно исполнение,
+        // по логу — возврат результата
+        setTimeout(function () {
+            executeCode("Api.GetActiveSheet().GetRange(\"A1\").SetFillColor(Api.CreateColorFromRGB(255, 255, 0)); return \"done\";",
+                        "selftest-2");
+        }, 200);
+    }
+
     function init() {
         // убираем загрузочную строку из index.html — code.js построил панель
         var lm = document.getElementById("loadingMsg");
@@ -811,6 +862,7 @@
         log("загружен, версия модуля: " + PLUGIN_VERSION, "sys");
         log("минимальное время между командами: " + minGapSec + " сек (localStorage/дефолт; файл моста уточнит)", "sys");
         setStatus("отключен", "off");
+        setTimeout(runSelfTests, 500);
     }
 
     if (window.Asc && window.Asc.plugin) {
@@ -930,3 +982,28 @@
 //   В обоих вызовах callCommand (executeCode и getDocName) третий аргумент
 //   изменён на true — теперь callback получает результат исполнителя R7Executor
 //   ({ok, info}/{ok, error}). Второй аргумент (isClose) остался false.
+// v1.0.35 (2026.11.24): поле с секундами подвинуто вплотную к лейблу ЖЁСТКО:
+//   зазор между лейблом и полем теперь задаёт gap контейнера (BTN_GAP = 6px,
+//   как между кнопками); у лейбла отступ убран (marginRight: 0), у поля
+//   убран левый паддинг (padding: 2px 0). Раньше зазор складывался из отступа
+//   лейбла и паддинга поля — визуально получалось ~10px и больше.
+// v1.0.36 (2026.11.24): факты от пользователя: ни Д3, ни E5 не покрасились —
+//   код в документе НЕ исполняется, а не просто не возвращается. Добавлена
+//   автоматическая самопроверка runSelfTests() при загрузке плагина (через
+//   500 мс): 1a — callCommand с isCalculate=false и return 777 (канат возврата
+//   в исходном режиме), 1b — то же с isCalculate=true, таймаут 3 сек на каждый,
+//   ответы логируются; 2 — исполнение в документе кода с побочным эффектом:
+//   покраска A1 жёлтым (RGB 255,255,0) + return "done" через executeCode.
+//   По ячейке A1 видно, исполняется ли код вообще; по строкам лога — работает
+//   ли канал возврата в обоих режимах. Все три пробы логируются с явными
+//   пометками «самопроверка …».
+// 26.48.1 (2026.11.24): (1) нумерация версий переведена на новую схему
+//   X.Y.Z: X = год ГГ (26), Y = номер недели (48), Z = порядковый номер
+//   исправления (файл code.js — первый по новой схеме).
+//   (2) Важное исправление: факт со скрина — docName "ТЕСТ_МОСТ.xlsx" дошёл
+//   в hello, то есть callCommand вернул строку (имя документа) — канал
+//   возврата работает для СТРОК, а объекты теряются (callback undefined).
+//   Исполнитель теперь возвращает результат строкой:
+//   fn внутри callCommand делает JSON.stringify(R7Executor(code)),
+//   а callback распаковывает JSON.parse — несоответствие форматов устранено.
+//   Самопроверки 1a/1b/2 остались, логика прежняя.
