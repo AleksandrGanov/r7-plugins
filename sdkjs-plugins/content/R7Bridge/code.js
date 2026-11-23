@@ -1,4 +1,18 @@
-// R7Bridge code.js v1.0.19
+// R7Bridge code.js v1.0.20
+// Изменения v1.0.20 (на базе реального v1.0.19):
+// - исправлено "команда не распознана: ?": мост доставляет команду в обёртке
+//   { url, method, body }, где команда лежит ВНУТРИ поля body строкой.
+//   В routeMessage добавлена распаковка: если у сообщения есть поле body
+//   (строка или готовый объект), команда берётся из него;
+// - добавлен второй чекбокс "скрывать системные сообщения" под окном лога,
+//   по умолчанию включён (такой же синий, как у "выводить json в строку");
+// - к системным отнесены все служебные сообщения плагина: жизненный цикл WS,
+//   имя документа, исходящий hello, переключение flatten, result, status.
+//   При включённой галочке они не выводятся в лог; при снятой — появляются
+//   (в том числе ранее скрытые: строки не удаляются, а скрываются классом);
+// - исходящий hello теперь пишется как системный (серый), а не исходящий (красный);
+// - высота лога calc(100vh - 134px) вместо calc(100vh - 112px) — место отдано
+//   второму чекбоксу.
 // Изменения v1.0.19 (пересборка на базе реального v1.0.17 — чекбокса в нём не было):
 // - добавлен чекбокс "выводить json в строку" под окном лога, по умолчанию включён;
 // - при включённой галочке любой json в логе плагина выводится в одну строку:
@@ -32,7 +46,7 @@
 // компактная строка статуса с подсветкой по состоянию (v1.0.7),
 // версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.19";
+    var PLUGIN_VERSION = "1.0.20";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -51,6 +65,10 @@
     // режим вывода json в лог: галочка "выводить json в строку"
     var FLATTEN_DEFAULT = true;          // по умолчанию галочка установлена
     var flattenMode = FLATTEN_DEFAULT;   // текущее состояние галочки
+
+    // режим скрытия системных сообщений: галочка "скрывать системные сообщения"
+    var HIDE_SYS_DEFAULT = true;         // по умолчанию галочка установлена
+    var hideSysMode = HIDE_SYS_DEFAULT;  // текущее состояние галочки
 
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
 
@@ -81,7 +99,17 @@
     }
     function fmtJson(s) { return flattenMode ? flattenJson(s) : s; }
 
-    // лог занимает всё свободное место окна (с учётом кнопок и статуса)
+    // стиль для скрытия системных строк: класс на контейнере лога,
+    // сами строки остаются в DOM — снял галочку, всё вернулось на место
+    function ensureHideSysStyle() {
+        if (document.getElementById("hideSysStyle")) return;
+        var st = document.createElement("style");
+        st.id = "hideSysStyle";
+        st.textContent = "#log.log-hide-sys .sys-line { display: none; }";
+        (document.head || document.body).appendChild(st);
+    }
+
+    // лог занимает всё свободное место окна (с учётом кнопок, статуса и чекбоксов)
     function styleLog() {
         var el = document.getElementById("log");
         if (!el) return;
@@ -90,22 +118,28 @@
         el.style.overflowX  = "hidden";
         el.style.overflowY  = "auto";
         el.style.boxSizing  = "border-box";
-        el.style.height     = "calc(100vh - 112px)";
+        el.style.height     = "calc(100vh - 134px)";
         el.style.margin     = "2px 0 0 0";
     }
 
-    // каждая строка лога — отдельный блок, цвет задаётся ШРИФТУ, фон не трогаем
+    // каждая строка лога — отдельный блок, цвет задаётся ШРИФТУ, фон не трогаем.
+    // kind: "in" (зелёный), "out" (красный), "sys" (серый, системное).
+    // Системные строки получают класс sys-line — при включённой галочке
+    // "скрывать системные сообщения" они скрываются классом на контейнере лога.
     function log(msg, kind) {
         var el = document.getElementById("log");
         if (!el) { try { console.log("-- " + msg); } catch (e) {} return; }
         styleLog();
+        ensureHideSysStyle();
         var line = document.createElement("div");
         line.textContent = "-- " + msg;
         line.style.margin  = "0";
         line.style.padding = "0";
         line.style.color = kind === "in"  ? LOG_COLOR_IN :
                            kind === "out" ? LOG_COLOR_OUT : LOG_COLOR_SYS;
+        if (kind === "sys") line.className = "sys-line";
         el.appendChild(line);
+        if (hideSysMode) el.classList.add("log-hide-sys");
         el.scrollTop = el.scrollHeight;
     }
 
@@ -141,7 +175,7 @@
     }
 
     function checkStatus() {
-        log("Info: опрашиваю мост...");
+        log("Info: опрашиваю мост...", "sys");
         fetch(BRIDGE_HTTP + "/status", {
             headers: { "X-Proxy-Token-R7": TOKEN },
             cache: "no-store"
@@ -150,18 +184,19 @@
         .then(function (data) {
             setStatus(data && data.online ? "подключен" : "отключен",
                       data && data.online ? "ok" : "off");
-            log("status ok, " + fmtStatus(data) + ".");
+            log("status ok, " + fmtStatus(data) + ".", "sys");
         })
         .catch(function (e) {
             setStatus("ошибка подключения", "err");
-            log("status fail: " + e.message);
+            log("status fail: " + e.message, "sys");
         });
     }
 
-    // единая точка отправки — каждое исходящее сообщение видно в логе
-    function sendWS(ws, obj) {
+    // единая точка отправки — каждое исходящее сообщение видно в логе.
+    // kind: тип строки лога ("out" — красная, "sys" — серая системная).
+    function sendWS(ws, obj, kind) {
         var s = JSON.stringify(obj);
-        log("исходящее: " + fmtJson(s), "out");
+        log("исходящее: " + fmtJson(s), kind || "out");
         ws.send(s);
     }
 
@@ -208,26 +243,26 @@
             window.__r7bridge_ws = null;
             setStatus("отключен", "off");
         }
-        log("WS: подключаюсь к " + BRIDGE_WS);
+        log("WS: подключаюсь к " + BRIDGE_WS, "sys");
         var ws;
         try { ws = new WebSocket(BRIDGE_WS + "?token=" + TOKEN); }
         catch (e) {
-            log("WS: ошибка создания сокета: " + e.message);
+            log("WS: ошибка создания сокета: " + e.message, "sys");
             setStatus("ошибка подключения", "err");
             return;
         }
 
         ws.onopen = function () {
-            log("WS: открыт");
+            log("WS: открыт", "sys");
             setStatus("подключен", "ok");
             getDocName(function (docName) {
                 if (ws.readyState !== WebSocket.OPEN) {
                     log("имя документа: " + (docName || "нет") +
-                        ", но сокет уже закрыт — приветствие не отправлено");
+                        ", но сокет уже закрыт — приветствие не отправлено", "sys");
                     return;
                 }
-                if (docName) log("имя документа: " + docName);
-                else log("имя документа получить не удалось, docName будет пустым");
+                if (docName) log("имя документа: " + docName, "sys");
+                else log("имя документа получить не удалось, docName будет пустым", "sys");
                 sendWS(ws, {
                     type: "hello",
                     client: "R7Bridge",
@@ -235,15 +270,15 @@
                     docName: docName,
                     flatten: flattenMode,
                     userAgent: navigator.userAgent
-                });
+                }, "sys");
             });
         };
         ws.onclose = function (e) {
-            log("WS: закрыт, код " + e.code);
+            log("WS: закрыт, код " + e.code, "sys");
             setStatus("отключен", "off");
         };
         ws.onerror = function () {
-            log("WS: ошибка соединения");
+            log("WS: ошибка соединения", "sys");
             setStatus("ошибка подключения", "err");
         };
         ws.onmessage = function (ev) {
@@ -261,13 +296,13 @@
             try { ws.close(); } catch (e) {}
             window.__r7bridge_ws = null;
         }
-        log("WS: отключаюсь от " + BRIDGE_WS);
+        log("WS: отключаюсь от " + BRIDGE_WS, "sys");
         setStatus("отключен", "off");
     }
 
     function insertText(text) {
         if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
-            log("ошибка: callCommand недоступен");
+            log("ошибка: callCommand недоступен", "sys");
             return;
         }
         window.Asc.plugin.callCommand(new Function(
@@ -277,27 +312,38 @@
             "p.AddText(t);" +
             "doc.InsertContent(p);"
         ), false, false, function () {
-            log("текст вставлен");
+            log("текст вставлен", "sys");
         });
     }
 
+    // разбор входящих сообщений. Мост доставляет команду в обёртке:
+    // { url: "/send", method: "POST", body: "{\"action\":\"insertText\",...}" } —
+    // команда лежит ВНУТРИ поля body строкой, поэтому перед разбором body
+    // распаковывается (строка парсится, готовый объект берётся как есть).
     function routeMessage(data) {
         var msg;
         try { msg = JSON.parse(data); } catch (e) { return; }
+        if (msg && msg.body) {
+            if (typeof msg.body === "string") {
+                try { msg = JSON.parse(msg.body); } catch (e2) { /* не-json body — оставляем как есть */ }
+            } else if (typeof msg.body === "object" && msg.body !== null) {
+                msg = msg.body;
+            }
+        }
         if (msg.action === "insertText" && typeof msg.text === "string") {
             insertText(msg.text);
             sendResult("insertText", true);
         } else if (msg.action === "ping") {
             sendResult("ping", true);
         } else {
-            log("команда не распознана: " + (msg.action || "?"));
+            log("команда не распознана: " + (msg.action || "?"), "sys");
         }
     }
 
     function sendResult(action, ok) {
         var ws = window.__r7bridge_ws;
         if (ws && ws.readyState === WebSocket.OPEN) {
-            sendWS(ws, { type: "result", action: action, ok: ok });
+            sendWS(ws, { type: "result", action: action, ok: ok }, "sys");
         }
     }
 
@@ -412,36 +458,77 @@
         btnClear.onclick = clearLog;
     }
 
-    // чекбокс "выводить json в строку" под окном лога.
-    // По умолчанию галочка установлена (FLATTEN_DEFAULT).
-    // При переключении: запись в лог плагина + сообщение мосту {"type":"flatten"}.
-    function ensureFlattenCheckbox() {
-        if (document.getElementById("chkFlatten")) return;
+    // единая отрисовка чекбокса: два одинаковых по стилю под окном лога —
+    // "выводить json в строку" (id chkFlatten) и
+    // "скрывать системные сообщения" (id chkHideSys, по умолчанию включён).
+    function ensureCheckboxes() {
         var logEl = document.getElementById("log");
         if (!logEl) return;
-        var wrap = document.createElement("label");
-        wrap.id = "chkFlattenWrap";
-        var cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.id = "chkFlatten";
-        cb.checked = flattenMode;
-        wrap.appendChild(cb);
-        wrap.appendChild(document.createTextNode(" выводить json в строку"));
-        wrap.style.fontSize   = "11px";
-        wrap.style.lineHeight = "1.4";
-        wrap.style.display    = "block";
-        wrap.style.margin     = "3px 0 4px 2px";
-        wrap.style.color      = "#333";
-        if (logEl.parentNode) logEl.parentNode.insertBefore(wrap, logEl.nextSibling);
-        else document.body.appendChild(wrap);
-        cb.onchange = function () {
-            flattenMode = cb.checked;
-            log(flattenMode ? "json: вывод в строку" : "json: в формате json");
-            var ws = window.__r7bridge_ws;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                sendWS(ws, { type: "flatten", value: flattenMode });
-            }
-        };
+        var anchor = logEl;
+
+        // чекбокс "выводить json в строку" (как в v1.0.19)
+        if (!document.getElementById("chkFlatten")) {
+            var wrapF = document.createElement("label");
+            wrapF.id = "chkFlattenWrap";
+            var cbF = document.createElement("input");
+            cbF.type = "checkbox";
+            cbF.id = "chkFlatten";
+            cbF.checked = flattenMode;
+            wrapF.appendChild(cbF);
+            wrapF.appendChild(document.createTextNode(" выводить json в строку"));
+            wrapF.style.fontSize   = "11px";
+            wrapF.style.lineHeight = "1.4";
+            wrapF.style.display    = "block";
+            wrapF.style.margin     = "3px 0 0 2px";
+            wrapF.style.color      = "#333";
+            if (logEl.parentNode) logEl.parentNode.insertBefore(wrapF, logEl.nextSibling);
+            else document.body.appendChild(wrapF);
+            cbF.onchange = function () {
+                flattenMode = cbF.checked;
+                log(flattenMode ? "json: вывод в строку" : "json: в формате json", "sys");
+                var ws = window.__r7bridge_ws;
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    sendWS(ws, { type: "flatten", value: flattenMode }, "sys");
+                }
+            };
+            anchor = wrapF;
+        } else {
+            var exF = document.getElementById("chkFlattenWrap");
+            if (exF) anchor = exF;
+        }
+
+        // чекбокс "скрывать системные сообщения" — после чекбокса flatten
+        if (!document.getElementById("chkHideSys")) {
+            var wrapH = document.createElement("label");
+            wrapH.id = "chkHideSysWrap";
+            var cbH = document.createElement("input");
+            cbH.type = "checkbox";
+            cbH.id = "chkHideSys";
+            cbH.checked = hideSysMode;
+            wrapH.appendChild(cbH);
+            wrapH.appendChild(document.createTextNode(" скрывать системные сообщения"));
+            wrapH.style.fontSize   = "11px";
+            wrapH.style.lineHeight = "1.4";
+            wrapH.style.display    = "block";
+            wrapH.style.margin     = "0 0 4px 2px";
+            wrapH.style.color      = "#333";
+            if (anchor.parentNode) anchor.parentNode.insertBefore(wrapH, anchor.nextSibling);
+            else document.body.appendChild(wrapH);
+            cbH.onchange = function () {
+                hideSysMode = cbH.checked;
+                applyHideSys();
+                log(hideSysMode ? "системные сообщения: скрыты" : "системные сообщения: показаны", "in");
+            };
+        }
+    }
+
+    // применяет/снимает скрытие системных строк: класс на контейнере лога
+    function applyHideSys() {
+        var el = document.getElementById("log");
+        if (!el) return;
+        ensureHideSysStyle();
+        if (hideSysMode) el.classList.add("log-hide-sys");
+        else el.classList.remove("log-hide-sys");
     }
 
     function init() {
@@ -452,8 +539,9 @@
         } catch (e) {}
         fixHeaders();
         ensureButtons();
-        ensureFlattenCheckbox();
-        log("загружен, версия модуля: " + PLUGIN_VERSION);
+        ensureCheckboxes();
+        applyHideSys();
+        log("загружен, версия модуля: " + PLUGIN_VERSION, "sys");
         setStatus("отключен", "off");
     }
 
