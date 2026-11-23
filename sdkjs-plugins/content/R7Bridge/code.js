@@ -1,7 +1,7 @@
-// R7Bridge code.js — Версия 1.0.27 (2026.11.23)
+// R7Bridge code.js — Версия 1.0.28 (2026.11.23)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.27";
+    var PLUGIN_VERSION = "1.0.28";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -292,26 +292,10 @@
         setStatus("отключен", "off");
     }
 
-    function insertText(text) {
-        if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
-            log("ошибка: callCommand недоступен", "syserr");
-            return;
-        }
-        window.Asc.plugin.callCommand(new Function(
-            "var t = " + JSON.stringify(text) + ";" +
-            "var doc = Api.GetDocument();" +
-            "var p = Api.CreateParagraph();" +
-            "p.AddText(t);" +
-            "doc.InsertContent(p);"
-        ), false, false, function () {
-            log("текст вставлен", "sys");
-        });
-    }
-
     // разбор входящих сообщений. Мост доставляет команду в обёртке:
-    // { url: "/send", method: "POST", body: "{\"action\":\"insertText\",...}" } —
-    // команда лежит ВНУТРИ поля body строкой, поэтому перед разбором body
-    // распаковывается (строка парсится, готовый объект берётся как есть).
+    // { url: "/send", method: "POST", body: "{...}" } — команда лежит
+    // ВНУТРИ поля body строкой, поэтому перед разбором body распаковывается
+    // (строка парсится, готовый объект берётся как есть).
     function routeMessage(data) {
         var msg;
         try { msg = JSON.parse(data); } catch (e) { return; }
@@ -322,20 +306,63 @@
                 msg = msg.body;
             }
         }
-        if (msg.action === "insertText" && typeof msg.text === "string") {
-            insertText(msg.text);
-            sendResult("insertText", true);
-        } else if (msg.action === "ping") {
-            sendResult("ping", true);
+        // ретранслятор: плагин не разбирает команду и не проверяет её корректность.
+        // Единственное, что он умеет — увидеть маркер адресата "Р7-Офис" и передать
+        // код команды исполнителю. Корректность кода проверяет сам документ.
+        if (msg.target && String(msg.target).toLowerCase() === "р7-офис" &&
+            typeof msg.code === "string") {
+            log("команда Р7-Офиса, передача исполнителю (requestId: " +
+                (msg.requestId || "нет") + ")", "sys");
+            executeCode(msg.code, msg.requestId);
         } else {
-            log("команда не распознана: " + (msg.action || "?"), "syserr");
+            log("команда не распознана: " + (msg.action || msg.target || "?"), "syserr");
         }
     }
 
-    function sendResult(action, ok) {
+    // исполнение кода команды в документе: готовый код передаётся строкой
+    // в R7Executor внутри callCommand. R7Executor объявлен в executor.js
+    // плагина — его исходник встраивается в сериализуемую функцию через
+    // Function.toString, потому что callCommand исполняет код в контексте
+    // документа, где функции плагина напрямую не видны. Результат исполнителя
+    // ({ok, info} при успехе, {ok, error} при сбое) уходит в мост сообщением
+    // type: "result". Корректность кода не проверяется — её проверяет документ.
+    function executeCode(code, requestId) {
+        if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
+            log("ошибка: callCommand недоступен", "syserr");
+            sendResult("r7command", false, requestId, { ok: false, error: "callCommand недоступен" });
+            return;
+        }
+        if (typeof R7Executor === "undefined") {
+            log("ошибка: R7Executor не загружен — executor.js не подключён к плагину", "syserr");
+            sendResult("r7command", false, requestId, { ok: false, error: "R7Executor не загружен" });
+            return;
+        }
+        try {
+            var fn = new Function("code",
+                "var R7Executor = " + R7Executor.toString() + ";\n" +
+                "return R7Executor(code);");
+            window.Asc.plugin.callCommand(fn, false, false, function (res) {
+                var ok = !!(res && res.ok);
+                if (ok) log("исполнено: " + (res.info || "команда исполнена"), "sys");
+                else log("команда не удалась: " + ((res && res.error) || "нет данных"), "syserr");
+                sendResult("r7command", ok, requestId,
+                           res || { ok: false, error: "нет ответа исполнителя" });
+            });
+        } catch (e) {
+            log("ошибка запуска исполнителя: " + e.message, "syserr");
+            sendResult("r7command", false, requestId,
+                       { ok: false, error: "ошибка запуска исполнителя: " + e.message });
+        }
+    }
+
+    // отправка результата в мост: статус исполнения команды и requestId —
+    // чтобы ответ можно было сопоставить с исходной командой. Данные берёт
+    // из аргументов, отдаёт сообщение type: "result" через сокет.
+    function sendResult(action, ok, requestId, result) {
         var ws = window.__r7bridge_ws;
         if (ws && ws.readyState === WebSocket.OPEN) {
-            sendWS(ws, { type: "result", action: action, ok: ok }, "sys");
+            sendWS(ws, { type: "result", action: action, ok: ok,
+                         requestId: requestId || "", result: result || null }, "sys");
         }
     }
 
@@ -604,3 +631,12 @@
 //   !important, обычная строка el.style.display = "block" его не перекрыла —
 //   поэтому в v1.0.26 окно так и не появилось; заодно панель кнопок и ряд
 //   выровнены по левому краю (левая кромка ON — край окна).
+// v1.0.28 (2026.11.23): плагин переведён на роль ретранслятора. Старые команды
+//   insertText и ping убраны: routeMessage распознаёт только маркер адресата
+//   "Р7-Офис" (команда {target: "Р7-Офис", code, requestId}) и передаёт код
+//   исполнителю. Новая executeCode() сериализует исходник R7Executor
+//   из executor.js внутрь callCommand (в контексте документа функции плагина
+//   напрямую не видны) и исполняет код команды в документе. sendResult
+//   передаёт в мост requestId и полный результат исполнителя
+//   ({ok, info} / {ok, error}). Корректность команды нигде не проверяется —
+//   её проверяет сам документ при исполнении.

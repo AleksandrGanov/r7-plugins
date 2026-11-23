@@ -1,4 +1,5 @@
-﻿<!DOCTYPE html>
+<!-- Версия 1.1 (2026.11.24) -->
+<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -17,6 +18,14 @@
   <div id="loadingMsg">Плагин загружается...</div>
   <div id="status"></div>
   <pre id="log"></pre>
+  <script src="executor.js"></script>
   <script src="code.js"></script>
 </body>
 </html>
+
+<!-- Лог изменений:
+v1.0 (2026.11.23): первая версия. Разметка окна плагина: строка загрузки, статус,
+  лог; подключение plugins.js и code.js; вид окна лога определяет code.js.
+v1.1 (2026.11.24): добавлено подключение executor.js до code.js — R7Executor
+  (исполнитель кода команд) загружается вместе с плагином. Остальное не менялось.
+-->
