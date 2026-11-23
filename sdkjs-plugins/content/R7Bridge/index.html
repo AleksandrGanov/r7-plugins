@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -6,18 +6,16 @@
 <script src="https://onlyoffice.github.io/sdkjs-plugins/v1/plugins.js"></script>
 <style>
   body { font-family: "Segoe UI", Arial, sans-serif; margin: 12px; font-size: 13px; }
-  h3 { margin: 0 0 10px 0; }
-  #status { padding: 8px; border-radius: 6px; background: #f2f4f7; margin-bottom: 10px; }
-  button { margin-right: 8px; padding: 6px 14px; }
-  #log { white-space: pre-wrap; background: #1e1e1e; color: #cde; padding: 8px;
-         height: 160px; overflow-y: auto; font-size: 12px; border-radius: 6px; }
+  /* загрузочная строка: единственное видимое содержимое до выполнения code.js */
+  #loadingMsg { color: #909090; font-size: 13px; }
+  /* code.js находит эти элементы по id и оформляет сам — в разметке они невидимы */
+  #status { display: none; }
+  #log { display: none; }
 </style>
 </head>
 <body>
-  <h3>R7 Мост</h3>
-  <div id="status">Статус: не проверен</div>
-  <button id="btnCheck">Проверить мост</button>
-  <button id="btnConnect">Подключиться</button>
+  <div id="loadingMsg">Плагин загружается...</div>
+  <div id="status"></div>
   <pre id="log"></pre>
   <script src="code.js"></script>
 </body>

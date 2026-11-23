@@ -1,12 +1,11 @@
-// R7Bridge code.js — Версия 1.0.23 (2026.11.23)
+﻿// R7Bridge code.js — Версия 1.0.24 (2026.11.23)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.23";
+    var PLUGIN_VERSION = "1.0.24";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
     var BTN_GAP = "6px"; // три промежутка между четырьмя кнопками
-    var BTN_BG = "#FFFBED"; // фон всех четырёх кнопок — светло-кремовый (255, 251, 237)
 
     // цвет ШРИФТА строк лога: входящее / исходящее / системное
     var LOG_COLOR_IN  = "#3f9b3f"; // светло-зелёный
@@ -377,7 +376,7 @@
             row.style.flexWrap   = "nowrap";
             row.style.alignItems = "stretch";
             row.style.gap        = BTN_GAP;
-            row.style.width      = "100%";
+            row.style.width      = "85%";
             row.style.boxSizing  = "border-box";
             panel.appendChild(row);
         }
@@ -412,7 +411,6 @@
             b.style.fontSize   = "13px";
             b.style.whiteSpace = "nowrap";
             b.style.boxSizing  = "border-box";
-            b.style.background = BTN_BG; // кремовый фон всех четырёх кнопок
         }
         btnOn.textContent    = "ON";
         btnOff.textContent   = "OFF";
@@ -502,6 +500,9 @@
     }
 
     function init() {
+        // убираем загрузочную строку из index.html — code.js построил панель
+        var lm = document.getElementById("loadingMsg");
+        if (lm && lm.parentNode) lm.parentNode.removeChild(lm);
         // прижимаем контент к верхней кромке окна
         try {
             document.body.style.margin   = "0";
@@ -553,6 +554,10 @@
 //   "команда не распознана: ...". Стиль скрытия изменён на
 //   #log.log-hide-sys .sys-line:not(.sys-err) { display: none; } — снял галочку,
 //   скрытые строки возвращаются на место (не удаляются).
+// v1.0.24 (2026.11.23): кнопки ON, OFF, TEST, CLEAR уменьшены на ~15% —
+//   ширина ряда кнопок 100% -> 85% (промежутки 6px и выравнивание по левому
+//   краю не менялись); отменена покраска кнопок в кремовый (v1.0.22):
+//   константа BTN_BG удалена, фон кнопок снова стандартный серый.
 // Накопленное: кнопки одним рядом, ON слева от OFF, равные ширины (v1.0.14),
 //   лог на всю высоту окна (v1.0.8), цвет шрифта строк лога (v1.0.7),
 //   компактная строка статуса с подсветкой по состоянию (v1.0.7),
