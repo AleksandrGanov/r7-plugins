@@ -1,4 +1,4 @@
-// Версия 1.1.2
+// Версия 1.1.3
 
 /**
  * Исполнитель кода команд Р7-Офис.
@@ -84,7 +84,7 @@ function R7Executor(code) {
         },
         // get_object_status: статус ячейки. Аргумент — ссылка на ячейку
         // (например, "D3"). Собирает: адрес (GetAddress), текст (GetText),
-        // значение (GetValue), цвет заливки (GetFillColor -> GetRGB, плюс
+        // значение (GetValue), цвет заливки (GetFillColor -> color.rgb или GetRGB, плюс
         // hex-строка). Отдаёт строку кода, возвращающую объект-сводку;
         // без аргумента — null (ошибка использования).
         "get_object_status": function (args) {
@@ -100,7 +100,10 @@ function R7Executor(code) {
                 "  try { out.value = (typeof r.GetValue === 'function') ? r.GetValue() : 'нет метода'; } catch (e) { out.value = 'ошибка: ' + e.message; }" +
                 "  try {" +
                 "   var f = r.GetFillColor();" +
-                "   if (f && typeof f.GetRGB === 'function') {" +
+                "   if (f && f.color && typeof f.color.rgb === 'number') {" +
+                "    out.fillRGB = f.color.rgb;" +
+                "    out.fillHex = '#' + ('000000' + (out.fillRGB & 0xFFFFFF).toString(16).toUpperCase()).slice(-6);" +
+                "   } else if (f && typeof f.GetRGB === 'function') {" +
                 "    out.fillRGB = f.GetRGB();" +
                 "    out.fillHex = '#' + ('000000' + ((out.fillRGB & 0xFFFFFF) >>> 0).toString(16).toUpperCase()).slice(-6);" +
                 "   } else { out.fillRGB = (f === null ? 'нет заливки' : String(f)); }" +
@@ -205,6 +208,14 @@ function R7Executor(code) {
 //   Успех с undefined-результатом явно помечен: "команда исполнена (без
 //   возвращаемого значения)". Цель — по логу всегда видеть, почему команда
 //   не удалась и в чём ошибка.
+// v1.1.3 (2026.11.24): уточнено извлечение цвета заливки в get_object_status.
+//   Проба fill-probe-002 (24.11) показала реальную структуру цвета в Р7:
+//   GetFillColor() возвращает объект { color: { rgb: 45136, _hash: 45136 } }
+//   (45136 = 0x00B050 = RGB(0,176,80)), метода GetRGB у объекта нет. Теперь
+//   fillRGB/fillHex берутся из f.color.rgb; если у объекта цвета вдруг есть
+//   метод GetRGB — используется он; прочие случаи — как раньше (null → "нет
+//   заливки", прочее → String). Проверка структуры выполнена на живом
+//   документе через обратный канал /result.
 // v1.1.2 (2026.11.24): добавлен раздел встроенных команд (по запросу пользователя):
 //   get_version (версия Builder API), get_lock (проба блокировок документа),
 //   get_object_status ЯЧЕЙКА (адрес, текст, значение, цвет заливки ячейки).
