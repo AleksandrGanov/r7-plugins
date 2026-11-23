@@ -1,7 +1,7 @@
-// R7Bridge code.js — Версия 1.0.33 (2026.11.24)
+// R7Bridge code.js — Версия 1.0.34 (2026.11.24)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.33";
+    var PLUGIN_VERSION = "1.0.34";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -238,7 +238,7 @@
             if (window.Asc && window.Asc.plugin && window.Asc.plugin.callCommand) {
                 window.Asc.plugin.callCommand(new Function(
                     "try { return Api.GetFullName() || \"\"; } catch (e) { return \"\"; }"
-                ), false, false, function (res) {
+                ), false, true, function (res) { // isCalculate=true: только так callback получает результат
                     if (res) finish(res); else fallback();
                 });
             } else {
@@ -413,7 +413,7 @@
                       " сек — документ не вернул результат" });
             }, EXEC_TIMEOUT_MS);
 
-            window.Asc.plugin.callCommand(fn, false, false, function (res) {
+            window.Asc.plugin.callCommand(fn, false, true, function (res) { // isCalculate=true: без него callback получает undefined (подтверждено логом 24.11)
                 if (answered) return; // ответ уже уходит таймаутом — дубль не пишем
                 answered = true;
                 clearTimeout(timer);
@@ -924,3 +924,9 @@
 //   отступ лейбла справа 6px -> 2px; вместе с внутренним паддингом поля (4px)
 //   видимый зазор между текстом "сек:" и цифрой становится ~6px — как между
 //   кнопками (BTN_GAP). Остальное без изменений.
+// v1.0.34 (2026.11.24): причина «команда не удалась: callback получил undefined —
+//   документ не вернул результат» подтверждена логом (cmd-20261124-0131-001, Д3):
+//   callCommand при isCalculate=false НЕ передаёт результат функции в callback.
+//   В обоих вызовах callCommand (executeCode и getDocName) третий аргумент
+//   изменён на true — теперь callback получает результат исполнителя R7Executor
+//   ({ok, info}/{ok, error}). Второй аргумент (isClose) остался false.
