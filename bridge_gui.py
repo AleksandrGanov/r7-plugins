@@ -1,4 +1,4 @@
-# Версия 26.48.2 от 24.11.2026
+# Версия 26.48.5 от 24.11.2026
 # Название файла при выдаче в чат bridge_gui.py
 
 # -*- coding: utf-8 -*-
@@ -10,13 +10,22 @@ R7 Bridge — простая морда:
   - выпадающий список с логами из папки Logs
 """
 
+import datetime
 import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
-import tkinter as tk
-from tkinter import ttk, scrolledtext
+# tkinter импортируется в защищённом блоке: если его нет в системе,
+# программа не упадёт молча, а покажет понятное сообщение и дождётся Enter.
+try:
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext
+    TK_OK = True
+except Exception as _tk_err:
+    TK_OK = False
+    _TK_ERR = _tk_err
 
 # Настройки путей и параметров опроса. BASE_DIR — папка, где лежит скрипт
 # (или _MEIPASS при сборке в exe). LOGS_DIR — папка с логами рядом с ним.
@@ -28,6 +37,25 @@ PROCESS_NAME = "r7bridge.exe"
 
 REFRESH_MS = 3000  # период опроса статуса, мс
 
+FILE_VERSION = "26.48.5"  # версия файла, печатается в консоль при запуске
+
+# Печатает в консоль шапку с именем и версией запущенного файла.
+# Нужна, чтобы сразу видеть, какая именно версия файла реально запущена.
+def print_banner():
+    print("=" * 60)
+    print(f"Запущен файл: bridge_gui.py, версия {FILE_VERSION}")
+    print("=" * 60)
+
+# Дописывает текст ошибки в Logs/error_traceback.txt с датой и временем.
+# Обёрнута в try: если даже запись не удалась, это не мешает показать ошибку.
+def save_error_log(text: str):
+    try:
+        LOGS_DIR.mkdir(exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        with open(LOGS_DIR / "error_traceback.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n===== {stamp} =====\n{text}\n")
+    except Exception:
+        pass
 
 # Проверяет, запущен ли процесс бриджа. Ищет PROCESS_NAME среди процессов
 # через psutil, при его отсутствии — через tasklist. Возвращает True/False.
@@ -51,7 +79,6 @@ def is_bridge_running() -> bool:
     except Exception:
         return False
 
-
 # Читает лог-файл с диска. Пробует кодировки utf-8, затем cp1251,
 # возвращает текст файла в виде строки.
 def read_log_file(path: Path) -> str:
@@ -62,15 +89,19 @@ def read_log_file(path: Path) -> str:
             continue
     return path.read_text(encoding="utf-8", errors="replace")
 
-
-# Точка входа: создаёт папку Logs (если её нет), главное окно tkinter
-# и запускает цикл обработки событий.
+# Точка входа: проверяет наличие tkinter, создаёт папку Logs (если её нет),
+# главное окно tkinter и запускает цикл обработки событий.
 def main():
+    if not TK_OK:
+        raise RuntimeError(
+            "Модуль tkinter не найден — графическое окно невозможно.\n"
+            f"Причина: {_TK_ERR}\n"
+            "Переустановите Python и при установке включите компоненту tcl/tk."
+        )
     LOGS_DIR.mkdir(exist_ok=True)
     root = tk.Tk()
     BridgeGui(root)
     root.mainloop()
-
 
 # Класс главного окна: статус бриджа, выбор лога, чёрное поле лога,
 # кнопка "Закрыть". Управляет опросом статуса по таймеру.
@@ -78,11 +109,15 @@ class BridgeGui:
     # Строит интерфейс: верхняя строка со статусом и кнопкой "Закрыть",
     # строка выбора лога с комбобоксом и кнопкой "Обновить",
     # чёрное поле лога с прокруткой. Запускает первое обновление данных.
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: "tk.Tk"):
         self.root = root
         root.title("R7 Bridge")
         root.geometry("860x560")
         root.minsize(640, 420)
+
+        # Обработчик ошибок внутри окна: при любой ошибке в кнопках или
+        # таймере окно с ошибкой показывается, программа не закрывается.
+        root.report_callback_exception = self.report_callback_exception
 
         # Верхняя строка: статус + кнопка "Закрыть"
         top = ttk.Frame(root, padding=(10, 10, 10, 5))
@@ -123,6 +158,18 @@ class BridgeGui:
         self.refresh_log_list()
         self.update_status()
         self._schedule_status()
+
+    # Обработчик ошибок внутри работающего окна: собирает полный текст ошибки,
+    # пишет его в Logs/error_traceback.txt и показывает окно с сообщением.
+    # Программа при этом не закрывается.
+    def report_callback_exception(self, exc, val, tb):
+        err = "".join(traceback.format_exception(exc, val, tb))
+        save_error_log(err)
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("Ошибка в программе", err[-3000:])
+        except Exception:
+            print(err)
 
     # Обновляет метку статуса: читает результат is_bridge_running()
     # и красит надпись в зелёный (в работе) или красный (остановлен).
@@ -183,10 +230,34 @@ class BridgeGui:
         self.log_view.see("1.0")
         self.log_view.config(state="disabled")
 
-
 if __name__ == "__main__":
-    main()
+    try:
+        print_banner()
+        main()
+    except BaseException:
+        err = traceback.format_exc()
+        print(err)
+        save_error_log(err)
+        print("Программа остановлена из-за ошибки (полный текст выше).")
+        print("Копия ошибки сохранена в:", LOGS_DIR / "error_traceback.txt")
+    finally:
+        try:
+            input("\nНажмите Enter, чтобы закрыть это окно...")
+        except Exception:
+            pass
 
-
-Лог изменений:
-26.48.1, 24.11.2026 — Первое оформление файла по правилам: добавлена строка версии в начале, описание к каждой функции и методу, лог изменений в конце, убраны двойные пустые строки. Код не менялся.
+# Лог изменений:
+# 26.48.5, 24.11.2026 — Защита от закрытия усилена и проверена заново: в консоль
+#   при запуске печатается версия файла (видно, какая версия реально запущена);
+#   import tkinter вынесен в защищённый блок — при его отсутствии программа
+#   покажет сообщение и не закроется; ошибки внутри окна пишутся в
+#   Logs/error_traceback.txt; wait-Enter в finally обёрнут в try (не падает,
+#   если консоли нет). Логика интерфейса не менялась.
+# 26.48.4, 24.11.2026 — Лог изменений в конце закомментирован (был причиной
+#   SyntaxError при запуске). Весь запуск обёрнут в try/except BaseException,
+#   в finally — input(): окно/консоль не закрываются до нажатия Enter.
+#   Текст ошибки дополнительно сохраняется в Logs/error_traceback.txt.
+#   Ошибки внутри окна перехватываются через report_callback_exception.
+# 26.48.1, 24.11.2026 — Первое оформление файла по правилам: добавлена строка
+#   версии в начале, описание к каждой функции и методу, лог изменений в конце,
+#   убраны двойные пустые строки. Код не менялся.
