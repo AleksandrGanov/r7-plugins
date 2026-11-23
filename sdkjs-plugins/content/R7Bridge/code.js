@@ -1,11 +1,26 @@
-// R7Bridge code.js — Версия 1.0.29 (2026.11.24)
+// R7Bridge code.js — Версия 1.0.32 (2026.11.24)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.29";
+    var PLUGIN_VERSION = "1.0.32";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
     var BTN_GAP = "6px"; // три промежутка между четырьмя кнопками
+    var EXEC_TIMEOUT_MS = 10000; // сколько ждём callback от документа
+
+    // минимальное время между командами, сек: по умолчанию 5.
+    // Команда, пришедшая раньше этого интервала после предыдущей ПРИНЯТОЙ,
+    // игнорируется с пометкой в логе. Источники значения при загрузке:
+    // 1) файл настроек моста (GET /settings — мост пишет R7Bridge.json на диск),
+    // 2) localStorage (запасной вариант, пока мост недоступен),
+    // 3) дефолт GAP_DEFAULT_SEC.
+    var GAP_DEFAULT_SEC = 5;
+    var GAP_STORE_KEY = "r7bridgeMinGap";
+    var minGapSec = GAP_DEFAULT_SEC;
+
+    // время последней ПРИНЯТОЙ команды (мс epoch). Игнорируемые команды
+    // отсчёт НЕ сбрасывают. 0 — команда ещё не приходила.
+    var lastCmdTime = 0;
 
     // цвет ШРИФТА строк лога: входящее / исходящее / системное
     var LOG_COLOR_IN  = "#3f9b3f"; // светло-зелёный
@@ -26,6 +41,19 @@
     var hideSysMode = HIDE_SYS_DEFAULT;  // текущее состояние галочки
 
     function norm(s) { return String(s).replace(/\s+/g, " ").trim(); }
+
+    // таймстемп для строк лога: локальное время ЧЧ:ММ:СС (две цифры на разряд)
+    function ts() {
+        var d = new Date();
+        function p(n) { return (n < 10 ? "0" : "") + n; }
+        return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+    }
+
+    // безопасная сериализация значения в строку для лога:
+    // JSON.stringify падает на циклических ссылках — тогда просто String().
+    function safeJson(v) {
+        try { return JSON.stringify(v); } catch (e) { return String(v); }
+    }
 
     // разворачивает json в одну строку: {"a":1,"b":{"c":2}} -> "a: 1, b: c: 2".
     // Не-json (например, "R7Bridge v1.2.8 connected") возвращается как есть.
@@ -105,6 +133,7 @@
     }
 
     // каждая строка лога — отдельный блок, цвет задаётся ШРИФТУ, фон не трогаем.
+    // Вместо префикса "--" — таймстемп локального времени ЧЧ:ММ:СС.
     // kind: "in" (зелёный), "out" (красный), "sys" (серый, системное),
     // "syserr" (серый, системное-ошибка — НЕ скрывается галочкой).
     // Системные строки получают класс sys-line — при включённой галочке
@@ -116,7 +145,7 @@
         styleLog();
         ensureHideSysStyle();
         var line = document.createElement("div");
-        line.textContent = "-- " + msg;
+        line.textContent = ts() + " " + msg;
         line.style.margin  = "0";
         line.style.padding = "0";
         line.style.color = kind === "in"  ? LOG_COLOR_IN :
@@ -304,6 +333,10 @@
     // { url: "/send", method: "POST", body: "{...}" } — команда лежит
     // ВНУТРИ поля body строкой, поэтому перед разбором body распаковывается
     // (строка парсится, готовый объект берётся как есть).
+    // Скорость приёма: команда, пришедшая РАНЬШЕ, чем прошло minGapSec секунд
+    // с предыдущей ПРИНЯТОЙ команды, игнорируется — не исполняется вовсе,
+    // в лог выводится с пометкой "(проигнорировано: не прошло минимальное время)".
+    // Игнорируемая команда отсчёт интервала НЕ сбрасывает.
     function routeMessage(data) {
         var msg;
         try { msg = JSON.parse(data); } catch (e) { return; }
@@ -320,6 +353,15 @@
         // код команды исполнителю. Корректность кода проверяет сам документ.
         if (msg.target && normMarker(msg.target) === "r7-офис" &&
             typeof msg.code === "string") {
+            var now = Date.now();
+            var gapMs = minGapSec * 1000;
+            if (now - lastCmdTime < gapMs) {
+                // рано: игнорируем, но пишем в лог, чтобы всегда было видно
+                log("команда Р7-Офиса (requestId: " + (msg.requestId || "нет") +
+                    ") (проигнорировано: не прошло минимальное время)", "syserr");
+                return;
+            }
+            lastCmdTime = now;
             log("команда Р7-Офиса, передача исполнителю (requestId: " +
                 (msg.requestId || "нет") + ")", "sys");
             executeCode(msg.code, msg.requestId);
@@ -335,6 +377,10 @@
     // документа, где функции плагина напрямую не видны. Результат исполнителя
     // ({ok, info} при успехе, {ok, error} при сбое) уходит в мост сообщением
     // type: "result". Корректность кода не проверяется — её проверяет документ.
+    // Расширенное логирование в точке неудачи: перед запуском логируется сам код,
+    // в callback различаются все три исхода (undefined / null / объект) с полным
+    // ответом исполнителя, плюс таймаут — если callback вообще не пришёл за
+    // EXEC_TIMEOUT_MS, это тоже фиксируется как сбой с текстом причины.
     function executeCode(code, requestId) {
         if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
             log("ошибка: callCommand недоступен", "syserr");
@@ -350,15 +396,53 @@
             var fn = new Function("code",
                 "var R7Executor = " + R7Executor.toString() + ";\n" +
                 "return R7Executor(code);");
+            // расширенный лог: видно, какой именно код уходит в документ
+            log("исполнитель запущен, код: " + code, "sys");
+
+            var answered = false; // флаг: ответ уже получен (или уходит по таймауту)
+
+            // таймаут: если callCommand вообще не вызвал callback — фиксируем сбой,
+            // иначе команда висела бы молча без всякого ответа
+            var timer = setTimeout(function () {
+                if (answered) return;
+                answered = true;
+                log("команда не удалась: callback не пришёл за " + (EXEC_TIMEOUT_MS / 1000) +
+                    " сек — документ не вернул результат (requestId: " + (requestId || "нет") + ")", "syserr");
+                sendResult("r7command", false, requestId,
+                    { ok: false, error: "callback не пришёл за " + (EXEC_TIMEOUT_MS / 1000) +
+                      " сек — документ не вернул результат" });
+            }, EXEC_TIMEOUT_MS);
+
             window.Asc.plugin.callCommand(fn, false, false, function (res) {
+                if (answered) return; // ответ уже уходит таймаутом — дубль не пишем
+                answered = true;
+                clearTimeout(timer);
                 var ok = !!(res && res.ok);
-                if (ok) log("исполнено: " + (res.info || "команда исполнена"), "sys");
-                else log("команда не удалась: " + ((res && res.error) || "нет данных"), "syserr");
+                if (ok) {
+                    log("исполнено: " + (res.info || "команда исполнена"), "sys");
+                } else {
+                    // расширенное логирование при неудаче: различаем все исходы.
+                    // undefined/null — документ не вернул результат (частая причина:
+                    // callCommand не передаёт данные обратно, а не ошибка в коде).
+                    // Объект — выводим его целиком: error исполнителя с именем,
+                    // сообщением и стеком видно полностью.
+                    var details =
+                        (res === undefined) ? "callback получил undefined — документ не вернул результат" :
+                        (res === null)      ? "callback получил null — документ не вернул результат" :
+                        "полный ответ исполнителя: " + safeJson(res);
+                    log("команда не удалась: " + details +
+                        " (requestId: " + (requestId || "нет") + ")", "syserr");
+                }
                 sendResult("r7command", ok, requestId,
-                           res || { ok: false, error: "нет ответа исполнителя" });
+                           res || { ok: false,
+                                    error: (res === undefined) ? "нет ответа исполнителя (callback undefined)" :
+                                           (res === null)      ? "нет ответа исполнителя (callback null)" :
+                                           "нет ok в ответе исполнителя" });
             });
         } catch (e) {
-            log("ошибка запуска исполнителя: " + e.message, "syserr");
+            // ошибка при запуске исполнителя: сообщение + стек целиком
+            log("ошибка запуска исполнителя: " + e.message +
+                "; stack: " + (e.stack || "нет"), "syserr");
             sendResult("r7command", false, requestId,
                        { ok: false, error: "ошибка запуска исполнителя: " + e.message });
         }
@@ -373,6 +457,67 @@
             sendWS(ws, { type: "result", action: action, ok: ok,
                          requestId: requestId || "", result: result || null }, "sys");
         }
+    }
+
+    // ===== НАСТРОЙКА "МИНИМАЛЬНОЕ ВРЕМЯ МЕЖДУ КОМАНДАМИ" =====
+    // Постоянное хранение — в файле на диске (C:\r7bridge\settings\R7Bridge.json),
+    // его пишет МОСТ: плагин сам не имеет доступа к файловой системе (браузерная
+    // песочница iframe). Плагин общается с мостом по HTTP:
+    //   GET  /settings — мост отдаёт содержимое файла {"minGapSec": N}
+    //   POST /settings — плагин отдаёт {"minGapSec": N}, мост пишет в файл.
+    // Запасной путь (если мост/эндпоинт недоступен): localStorage браузера.
+
+    // применяет текущее значение minGapSec к полю ввода (если оно уже создано)
+    function applyGapToField() {
+        var inp = document.getElementById("gapInput");
+        if (inp) inp.value = String(minGapSec);
+    }
+
+    // загрузка настройки из файла моста: GET /settings. Успех — значение
+    // применяется к minGapSec и полю, логируется. Файла нет или мост молчит —
+    // остаётся значение из localStorage/дефолта, ошибка фиксируется в логе.
+    function loadGapFromBridge() {
+        fetch(BRIDGE_HTTP + "/settings", {
+            headers: { "X-Proxy-Token-R7": TOKEN },
+            cache: "no-store"
+        })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function (data) {
+            var v = parseInt(data && data.minGapSec, 10);
+            if (!isNaN(v) && v >= 0) {
+                minGapSec = v;
+                applyGapToField();
+                log("настройка загружена из файла моста: минимальное время между командами = " +
+                    minGapSec + " сек", "sys");
+            } else {
+                log("файл настроек моста прочитан, но minGapSec в нём нет — осталось " +
+                    minGapSec + " сек", "syserr");
+            }
+        })
+        .catch(function (e) {
+            log("файл настроек моста недоступен (" + e.message +
+                ") — настройка взята из localStorage/по умолчанию: " + minGapSec + " сек", "syserr");
+        });
+    }
+
+    // запись настройки в файл моста: POST /settings с телом {"minGapSec": N}.
+    // Успех — подтверждение в логе. Неудача — настройка продолжает жить
+    // в localStorage до следующей попытки.
+    function saveGapToBridge() {
+        fetch(BRIDGE_HTTP + "/settings", {
+            method: "POST",
+            headers: { "X-Proxy-Token-R7": TOKEN, "Content-Type": "application/json" },
+            body: JSON.stringify({ minGapSec: minGapSec })
+        })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function (data) {
+            log("настройка записана в файл моста: минимальное время между командами = " +
+                minGapSec + " сек", "sys");
+        })
+        .catch(function (e) {
+            log("запись в файл моста не удалась: " + e.message +
+                " — настройка действует до перезагрузки (localStorage)", "syserr");
+        });
     }
 
     // дублирующие надписи внутри страницы скрываем целиком,
@@ -552,7 +697,90 @@
                 applyHideSys();
                 log(hideSysMode ? "системные сообщения: скрыты" : "системные сообщения: показаны", "sys");
             };
+            anchor = wrapH;
+        } else {
+            var exH = document.getElementById("chkHideSysWrap");
+            if (exH) anchor = exH;
         }
+
+        // строка настройки "минимальное время между командами" — после чекбокса
+        // hideSys: лейбл + текстовое поле (только целые неотрицательные цифры)
+        // + кнопка Save справа от поля. Значение действует на приём команд
+        // в routeMessage; сохранение — в файл моста (Save) + localStorage (запас).
+        if (!document.getElementById("gapSettingWrap")) {
+            var wrapG = document.createElement("div");
+            wrapG.id = "gapSettingWrap";
+            wrapG.style.display    = "flex";
+            wrapG.style.alignItems = "center";
+            wrapG.style.margin     = "0 0 4px 2px";
+
+            var lblG = document.createElement("span");
+            lblG.textContent = "минимальное время между командами, сек:";
+            lblG.style.fontSize   = "11px";
+            lblG.style.lineHeight = "1.4";
+            lblG.style.color      = "#333";
+            lblG.style.marginRight = "6px";
+            wrapG.appendChild(lblG);
+
+            var inpG = document.createElement("input");
+            inpG.id = "gapInput";
+            inpG.type = "text";
+            inpG.value = String(minGapSec);
+            inpG.style.width    = "50px";
+            inpG.style.fontSize = "11px";
+            inpG.style.padding  = "1px 4px";
+            inpG.style.boxSizing = "border-box";
+            // фильтр ввода: только цифры (0-9), максимум 4 знака (до 9999 сек).
+            // Буквы, минус, точка и прочее вырезаются прямо при вводе.
+            inpG.oninput = function () {
+                var v = String(inpG.value).replace(/\D+/g, "");
+                if (v.length > 4) v = v.slice(0, 4);
+                if (inpG.value !== v) inpG.value = v;
+            };
+            wrapG.appendChild(inpG);
+
+            var btnG = document.createElement("button");
+            btnG.id = "gapSaveBtn";
+            btnG.textContent = "Save";
+            btnG.style.fontSize  = "11px";
+            btnG.style.padding   = "2px 10px";
+            btnG.style.marginLeft = "6px";
+            btnG.style.whiteSpace = "nowrap";
+            btnG.onclick = saveGap;
+            wrapG.appendChild(btnG);
+
+            if (anchor.parentNode) anchor.parentNode.insertBefore(wrapG, anchor.nextSibling);
+            else document.body.appendChild(wrapG);
+        }
+    }
+
+    // сохранение настройки минимального времени между командами:
+    // читает поле, проверяет на целое неотрицательное, применяет, пишет
+    // в localStorage (запасной вариант) и отправляет мосту POST /settings —
+    // мост записывает значение в R7Bridge.json на диске. При некорректном
+    // значении — сброс поля на действующее значение и запись в лог.
+    function saveGap() {
+        var inp = document.getElementById("gapInput");
+        if (!inp) return;
+        var v = parseInt(inp.value, 10);
+        if (isNaN(v) || v < 0) {
+            log("сохранение не выполнено: значение пустое или некорректное (только целые, 0 и больше)", "syserr");
+            inp.value = String(minGapSec);
+            return;
+        }
+        minGapSec = v;
+        try { localStorage.setItem(GAP_STORE_KEY, String(minGapSec)); } catch (e) { /* хранилище недоступно */ }
+        saveGapToBridge();
+    }
+
+    // загрузка сохранённой настройки при старте (первый, быстрый источник):
+    // если в localStorage есть корректное целое неотрицательное — берём его,
+    // иначе остаётся значение по умолчанию (GAP_DEFAULT_SEC).
+    function loadGapSetting() {
+        try {
+            var v = parseInt(localStorage.getItem(GAP_STORE_KEY), 10);
+            if (!isNaN(v) && v >= 0) minGapSec = v;
+        } catch (e) { /* хранилище недоступно — значение по умолчанию */ }
     }
 
     // применяет/снимает скрытие системных строк: класс на контейнере лога
@@ -575,10 +803,13 @@
         } catch (e) {}
         fixHeaders();
         ensureVisibleStyle();
+        loadGapSetting();   // 1) localStorage — мгновенно
         ensureButtons();
         ensureCheckboxes();
         applyHideSys();
+        loadGapFromBridge(); // 2) файл моста — перекроет localStorage, если есть
         log("загружен, версия модуля: " + PLUGIN_VERSION, "sys");
+        log("минимальное время между командами: " + minGapSec + " сек (localStorage/дефолт; файл моста уточнит)", "sys");
         setStatus("отключен", "off");
     }
 
@@ -654,3 +885,38 @@
 //   в эталоне "р7-офис" ни при каком toLowerCase. Добавлена функция normMarker:
 //   кириллическая «р»/«Р» приравнивается к латинской r/R перед сравнением.
 //   Теперь "R7-Офис", "Р7-Офис", "р7-офис" — один маркер. Остальной код без изменений.
+// v1.0.30 (2026.11.24): расширенное логирование в точке "команда не удалась".
+//   Перед запуском исполнителя в лог пишется сам код команды. В callback
+//   различаются три исхода: undefined — "документ не вернул результат",
+//   null — то же, объект — выводится ЦЕЛИКОМ через safeJson (вместо "нет данных"
+//   теперь виден error исполнителя с именем ошибки, сообщением и стеком).
+//   В каждый лог-строку добавляется requestId. Добавлен таймаут EXEC_TIMEOUT_MS
+//   (10 сек): если callback от callCommand вообще не пришёл — фиксируется сбой
+//   с текстом "callback не пришёл за N сек", результат отправляется в мост
+//   только один раз (флаг answered против дублей). Добавлена safeJson —
+//   сериализация ответа в лог с защитой от циклических ссылок.
+//   В catch запуска исполнителя добавлен e.stack.
+// v1.0.31 (2026.11.24): две доработки. (1) Вместо префикса "--" в лог выводится
+//   таймстемп локального времени ЧЧ:ММ:СС (функция ts()), затем сообщение.
+//   (2) Настройка "минимальное время между командами, сек": под чекбоксом
+//   "скрывать системные сообщения" добавлена строка лейбл + текстовое поле
+//   (только целые неотрицательные цифры, фильтр oninput вырезает всё кроме 0-9,
+//   максимум 4 знака) + кнопка Save справа от поля. По умолчанию 5 сек.
+//   Команда, пришедшая раньше интервала после предыдущей ПРИНЯТОЙ команды,
+//   игнорируется (не исполняется), но в лог выводится строка
+//   "команда Р7-Офиса (requestId: ...) (проигнорировано: не прошло минимальное
+//   время)". Игнорируемая команда отсчёт интервала не сбрасывает. Настройка
+//   сохраняется кнопкой Save в localStorage (ключ r7bridgeMinGap) и загружается
+//   при старте (loadGapSetting); в init логируется действующее значение.
+// v1.0.32 (2026.11.24): постоянное хранение настройки в файле на диске.
+//   Плагин сам писать на диск не может (браузерная песочница iframe), поэтому
+//   файл пишет мост. Добавлены HTTP-запросы к мосту (127.0.0.1:8791):
+//   loadGapFromBridge() — GET /settings при старте: мост отдаёт содержимое
+//   R7Bridge.json, значение minGapSec применяется и вносится в поле;
+//   saveGapToBridge() — POST /settings при нажатии Save: мост записывает
+//   файл на диск. Логи: "настройка загружена из файла моста: N сек",
+//   "настройка записана в файл моста: N сек", при недоступности моста —
+//   ошибка в лог и работа по запасному пути (localStorage). Порядок загрузки
+//   в init: localStorage (мгновенно) -> затем файл моста перекрывает его.
+//   Плагин рассчитывает на эндпоинты GET/POST /settings в мосту — доработка
+//   моста выполняется отдельно (v1.2.14).
