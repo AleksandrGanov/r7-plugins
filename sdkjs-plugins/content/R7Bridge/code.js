@@ -1,11 +1,12 @@
-// Версия 26.48.2 (2026.11.24)
+// Версия 26.48.3 (2026.11.24)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "26.48.2";
+    var PLUGIN_VERSION = "26.48.3";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
     var BTN_GAP = "6px"; // три промежутка между четырьмя кнопками
+    var BTN_H   = "22px"; // единая высота всех кнопок: ON/OFF/TEST/CLEAR и Save (v26.48.3)
     var EXEC_TIMEOUT_MS = 10000; // сколько ждём callback от документа
 
     // минимальное время между командами, сек: по умолчанию 5.
@@ -128,7 +129,7 @@
         // видимость: упрощённый index.html держит #log скрытым на время загрузки,
         // без этой строки окно есть в DOM, но на экране не появляется
         el.style.setProperty("display", "block", "important"); // !important: перекрывает скрытие из index.html
-        el.style.height     = "calc(100vh - 134px)";
+        el.style.height     = "calc(100vh - 134px)"; // высота не менялась: кнопки стали ниже (~3px), но строка Save стала выше на столько же — баланс сохранён
         el.style.margin     = "2px 0 0 0";
     }
 
@@ -167,7 +168,9 @@
     function setStatus(text, kind) {
         var el = document.getElementById("status");
         if (!el) return;
-        el.textContent = "Статус: " + text;
+        // по просьбе пользователя (v26.48.3): версия модуля всегда видна в
+        // строке статуса, перед состоянием: "Версия 26.48.3. Статус: подключен"
+        el.textContent = "Версия " + PLUGIN_VERSION + ". Статус: " + text;
         el.style.fontSize   = "11px";
         el.style.lineHeight = "1.2";
         el.style.padding    = "1px 6px";
@@ -625,14 +628,17 @@
             if (order[i].parentNode !== row) row.appendChild(order[i]);
         }
 
-        // равная ширина: каждая кнопка — равная доля ряда (окна лога)
+        // равная ширина и ЕДИНАЯ ВЫСОТА: каждая кнопка — равная доля ряда
+        // (окна лога); высота фиксирована BTN_H и равна высоте кнопки Save
+        // из строки настройки (v26.48.3)
         for (var j = 0; j < order.length; j++) {
             var b = order[j];
             b.style.flex       = "1 1 0";
             b.style.width      = "auto";
+            b.style.height     = BTN_H;
             b.style.minWidth   = "0";
             b.style.margin     = "0";
-            b.style.padding    = "4px 0";
+            b.style.padding    = "2px 0";
             b.style.fontSize   = "13px";
             b.style.whiteSpace = "nowrap";
             b.style.boxSizing  = "border-box";
@@ -735,7 +741,7 @@
             lblG.style.fontSize   = "11px";
             lblG.style.lineHeight = "1.4";
             lblG.style.color      = "#333";
-            lblG.style.marginRight = "0"; // зазор задаёт gap контейнера, не отступ
+            lblG.style.margin = "0"; // зазор задаёт gap контейнера, не отступ
             wrapG.appendChild(lblG);
 
             var inpG = document.createElement("input");
@@ -745,6 +751,7 @@
             inpG.style.width    = "50px";
             inpG.style.fontSize = "11px";
             inpG.style.padding  = "2px 0"; // без левого паддинга: зазор только от gap контейнера
+            inpG.style.margin   = "0";     // без собственных отступов: зазор задаёт только gap контейнера
             inpG.style.boxSizing = "border-box";
             // фильтр ввода: только цифры (0-9), максимум 4 знака (до 9999 сек).
             // Буквы, минус, точка и прочее вырезаются прямо при вводе.
@@ -760,7 +767,11 @@
             btnG.textContent = "Save";
             btnG.style.fontSize  = "11px";
             btnG.style.padding   = "2px 10px";
-            btnG.style.marginLeft = "6px";
+            // зазор до поля задаёт gap контейнера (BTN_GAP, как между кнопками
+            // ряда); собственный отступ кнопки убран, высота — единая BTN_H (v26.48.3)
+            btnG.style.margin    = "0";
+            btnG.style.height    = BTN_H;
+            btnG.style.boxSizing = "border-box";
             btnG.style.whiteSpace = "nowrap";
             btnG.onclick = saveGap;
             wrapG.appendChild(btnG);
@@ -1018,3 +1029,18 @@
 //   Причина найдена: callCommand исполняет функцию без аргументов, параметр
 //   "code" в fn был undefined. Исправлено: код команды вшивается в тело
 //   функции строковым литералом через JSON.stringify (var code = <литерал>).
+// 26.48.3 (2026.11.24): четыре доработки окна плагина (по запросу пользователя):
+//   (1) поле ввода секунд прижато к лейблу: у лейбла и поля собственные
+//   отступы обнулены (margin: 0), зазор задаёт только gap контейнера
+//   (BTN_GAP = 6px — как между кнопками ON/OFF/TEST/CLEAR);
+//   (2) зазор между полем и кнопкой Save теперь тоже только gap контейнера:
+//   собственный marginLeft: 6px у Save убран — расстояние ровно 6px,
+//   как между кнопками ряда;
+//   (3) кнопки ON/OFF/TEST/CLEAR по высоте равны кнопке Save: у всех пяти
+//   задана единая фиксированная высота BTN_H = 22px (box-sizing: border-box);
+//   раньше ON/OFF/TEST/CLEAR были ~25px (padding 4px), Save ~19px. Строка
+//   статуса и всё, что ниже, поднимаются автоматически (поток), высота
+//   окна лога не менялась: экономия на кнопках компенсируется выросшей
+//   строкой настройки;
+//   (4) в строке статуса перед словом "Статус:" всегда выводится версия
+//   модуля: "Версия 26.48.3. Статус: подключен" (setStatus).
