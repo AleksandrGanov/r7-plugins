@@ -1,7 +1,7 @@
-// R7Bridge code.js — Версия 1.0.32 (2026.11.24)
+// R7Bridge code.js — Версия 1.0.33 (2026.11.24)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.32";
+    var PLUGIN_VERSION = "1.0.33";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -719,7 +719,7 @@
             lblG.style.fontSize   = "11px";
             lblG.style.lineHeight = "1.4";
             lblG.style.color      = "#333";
-            lblG.style.marginRight = "6px";
+            lblG.style.marginRight = "2px"; // зазор до поля 2px + 4px паддинг поля = ~6px, как между кнопками
             wrapG.appendChild(lblG);
 
             var inpG = document.createElement("input");
@@ -920,3 +920,7 @@
 //   в init: localStorage (мгновенно) -> затем файл моста перекрывает его.
 //   Плагин рассчитывает на эндпоинты GET/POST /settings в мосту — доработка
 //   моста выполняется отдельно (v1.2.14).
+// v1.0.33 (2026.11.24): поле ввода с секундами подвинуто вплотную к лейблу:
+//   отступ лейбла справа 6px -> 2px; вместе с внутренним паддингом поля (4px)
+//   видимый зазор между текстом "сек:" и цифрой становится ~6px — как между
+//   кнопками (BTN_GAP). Остальное без изменений.
