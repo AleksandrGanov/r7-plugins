@@ -1,7 +1,7 @@
-﻿// R7Bridge code.js — Версия 1.0.24 (2026.11.23)
+﻿// R7Bridge code.js — Версия 1.0.25 (2026.11.23)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.24";
+    var PLUGIN_VERSION = "1.0.25";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -76,6 +76,12 @@
         el.style.overflowX  = "hidden";
         el.style.overflowY  = "auto";
         el.style.boxSizing  = "border-box";
+        // внешний вид окна: тёмный фон раньше задавал CSS index.html,
+        // теперь вид окна полностью определяется здесь (index.html упрощён)
+        el.style.background = "#1e1e1e"; // тёмный фон окна лога
+        el.style.color      = "#cde";    // базовый цвет шрифта
+        el.style.padding    = "8px";
+        el.style.borderRadius = "6px";
         el.style.height     = "calc(100vh - 134px)";
         el.style.margin     = "2px 0 0 0";
     }
@@ -562,3 +568,9 @@
 //   лог на всю высоту окна (v1.0.8), цвет шрифта строк лога (v1.0.7),
 //   компактная строка статуса с подсветкой по состоянию (v1.0.7),
 //   версия модуля в статусе (v1.0.6), высота окна задаётся config.json (size).
+
+// v1.0.25 (2026.11.23): восстановлен вид окна лога — при упрощении index.html
+// из разметки ушли CSS-стили лога (тёмный фон #1e1e1e, цвет шрифта #cde,
+// отступ 8px, скругление 6px), из-за этого окно лога стало белым и пустым.
+// Внешний вид лога теперь задаётся полностью в code.js (styleLog):
+// фон, цвет шрифта, отступы и скругление восстановлены.
