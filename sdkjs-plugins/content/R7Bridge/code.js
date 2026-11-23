@@ -1,7 +1,7 @@
-﻿// R7Bridge code.js — Версия 1.0.26 (2026.11.23)
+// R7Bridge code.js — Версия 1.0.27 (2026.11.23)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "1.0.26";
+    var PLUGIN_VERSION = "1.0.27";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -67,9 +67,24 @@
         (document.head || document.body).appendChild(st);
     }
 
+    // гарантированная видимость окна лога и строки статуса: стиль с !important
+    // добавляется в head ПОСЛЕ стилей index.html, поэтому перекрывает их скрытие;
+    // заодно принудительно выравнивает панель кнопок и ряд по левому краю
+    function ensureVisibleStyle() {
+        if (document.getElementById("logVisibleStyle")) return;
+        var st = document.createElement("style");
+        st.id = "logVisibleStyle";
+        st.textContent =
+            "#log, #status { display: block !important; visibility: visible !important; opacity: 1 !important; } " +
+            "#buttons, #btnRow { margin-left: 0 !important; text-align: left !important; align-self: flex-start !important; } " +
+            "body { text-align: left !important; }";
+        (document.head || document.body).appendChild(st);
+    }
+
     // лог занимает всё свободное место окна (с учётом кнопок, статуса и чекбоксов)
     function styleLog() {
         var el = document.getElementById("log");
+        ensureVisibleStyle();
         if (!el) return;
         el.style.whiteSpace = "pre-wrap";
         el.style.wordBreak  = "break-word";
@@ -84,7 +99,7 @@
         el.style.borderRadius = "6px";
         // видимость: упрощённый index.html держит #log скрытым на время загрузки,
         // без этой строки окно есть в DOM, но на экране не появляется
-        el.style.display    = "block";
+        el.style.setProperty("display", "block", "important"); // !important: перекрывает скрытие из index.html
         el.style.height     = "calc(100vh - 134px)";
         el.style.margin     = "2px 0 0 0";
     }
@@ -376,6 +391,11 @@
             else if (body) body.appendChild(panel);
         }
 
+        // выравнивание по левому краю: левая кромка ON совпадает с краем окна
+        panel.style.marginLeft = "0";
+        panel.style.alignSelf  = "flex-start";
+        panel.style.textAlign  = "left";
+
         // ряд кнопок: flex, без переносов, ровно 3 промежутка между 4 кнопками
         var row = document.getElementById("btnRow");
         if (!row) {
@@ -518,6 +538,7 @@
             document.body.style.padding  = "0";
         } catch (e) {}
         fixHeaders();
+        ensureVisibleStyle();
         ensureButtons();
         ensureCheckboxes();
         applyHideSys();
@@ -578,3 +599,8 @@
 // v1.0.26 (2026.11.23): в styleLog() добавлено el.style.display = "block":
 //   упрощённый index.html держит #log скрытым при загрузке, из-за этого
 //   окно лога не появлялось на экране; styleLog() возвращает видимость.
+// v1.0.27 (2026.11.23): окно лога и строка статуса возвращаются на экран стилем
+//   с !important (ensureVisibleStyle): скрытие в index.html сделано правилом с
+//   !important, обычная строка el.style.display = "block" его не перекрыла —
+//   поэтому в v1.0.26 окно так и не появилось; заодно панель кнопок и ряд
+//   выровнены по левому краю (левая кромка ON — край окна).
