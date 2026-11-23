@@ -1,4 +1,4 @@
-// Версия 1.1.3
+// Версия 26.48.1 (2026.11.24)
 
 /**
  * Исполнитель кода команд Р7-Офис.
@@ -132,6 +132,173 @@ function R7Executor(code) {
         return { code: built };
     }
 
+
+    // ---------- автокопилка: разбор команды на методы ----------
+    // stripStrings: делает копию кода для СКАНИРОВАНИЯ — вырезает содержимое
+    // строковых литералов ('...', "...", `...`), однострочных и блочных
+    // комментариев, чтобы методы в тексте-литерале не считались вызовами.
+    // Переводы строк сохраняются — границы стейтментов не ломаются.
+    // Данные берёт из аргумента src, отдаёт очищенную строку той же длины.
+    function stripStrings(src) {
+        var out = [];
+        var i = 0;
+        var n = src.length;
+        var state = 0; // 0 — код; 1 '...' ; 2 "..." ; 3 `...`; 4 // ; 5 /* */
+        while (i < n) {
+            var c = src.charAt(i);
+            var c2 = (i + 1 < n) ? src.charAt(i + 1) : "";
+            if (state === 0) {
+                if (c === "'") { state = 1; out.push("''"); i++; continue; }
+                if (c === '"') { state = 2; out.push('""'); i++; continue; }
+                if (c === "`") { state = 3; out.push("``"); i++; continue; }
+                if (c === "/" && c2 === "/") { state = 4; i += 2; out.push("  "); continue; }
+                if (c === "/" && c2 === "*") { state = 5; i += 2; out.push("  "); continue; }
+                out.push(c); i++; continue;
+            }
+            if (state === 1 || state === 2 || state === 3) {
+                var q = (state === 1) ? "'" : (state === 2 ? '"' : "`");
+                if (c === "\\") { out.push("  "); i += 2; continue; }
+                if (c === q) { state = 0; }
+                out.push(c === "\n" ? "\n" : " "); i++; continue;
+            }
+            if (state === 4) {
+                if (c === "\n") { state = 0; out.push("\n"); } else { out.push(" "); }
+                i++; continue;
+            }
+            // state === 5 (блочный комментарий)
+            if (c === "*" && c2 === "/") { state = 0; out.push("  "); i += 2; continue; }
+            out.push(c === "\n" ? "\n" : " "); i++; continue;
+        }
+        return out.join("");
+    }
+
+    // extractMethods: статически разбирает КОД КОМАНДЫ (после вырезания строк
+    // и комментариев) и выделяет вызовы методов с привязкой к классу объекта.
+    // Механика (эвристика, без запуска кода):
+    //   1) карта переменных: если вызов — ПОСЛЕДНИЙ в стейтменте вида
+    //      `var X = ...`, X привязывается к классу ВОЗВРАТА вызова
+    //      (GetRange -> ApiRange, GetContent -> ApiDocumentContent и т. д.);
+    //   2) для каждого вызова `.Метод(...)` класс определяется так:
+    //      приёмник-идентификатор из карты переменных -> его класс; иначе
+    //      последний производитель в текущем стейтменте (Api., GetRange(...),
+    //      GetActiveSheet(), AddShape(...) и т. п.); иначе Unknown.
+    //      Встроенные функции JS и хелперы Алисы отфильтрованы.
+    // Отдаёт массив уникальных строк "Класс.Метод" (до 50 на команду); список
+    // попадает в ответ исполнителя (поле methods), мост ведёт по нему
+    // библиотеку r7_api (заготовки в папку New).
+    function extractMethods(src) {
+        var scan = stripStrings(String(src || ""));
+        var PRODUCERS = {
+            "GetActiveSheet": "ApiWorksheet", "GetSheet": "ApiWorksheet", "GetSheets": "ApiWorksheet",
+            "AddSheet": "ApiWorksheet", "GetAutoFilter": "ApiWorksheet",
+            "GetRange": "ApiRange", "GetRangeByNumber": "ApiRange", "GetUsedRange": "ApiRange",
+            "GetCells": "ApiRange", "GetCols": "ApiRange", "GetRows": "ApiRange",
+            "GetSelection": "ApiRange", "GetActiveCell": "ApiRange",
+            "GetEntireColumn": "ApiRange", "GetEntireRow": "ApiRange", "GetCurrentRegion": "ApiRange",
+            "GetAreas": "ApiRange", "GetItem": "ApiRange", "GetOffset": "ApiRange",
+            "GetComment": "ApiComment", "GetCharacters": "ApiCharacters", "GetFont": "ApiFont",
+            "GetContent": "ApiDocumentContent", "GetDocContent": "ApiDocumentContent",
+            "GetElement": "ApiParagraph", "GetParaPr": "ApiParaPr", "GetLastRunWithText": "ApiRun",
+            "GetDefName": "ApiName", "GetRefersToRange": "ApiName",
+            "GetAllShapes": "ApiShape", "GetAllCharts": "ApiChart", "GetAllImages": "ApiImage",
+            "GetAllOleObjects": "ApiOleObject", "GetAllDrawings": "ApiDrawing",
+            "AddChart": "ApiChart", "AddShape": "ApiShape", "AddImage": "ApiImage",
+            "AddOleObject": "ApiOleObject", "AddWordArt": "ApiDrawing",
+            "CreateRun": "ApiRun", "CreateParagraph": "ApiParagraph", "CreateTextPr": "ApiTextPr",
+            "CreateNoFill": "ApiFill", "CreateSolidFill": "ApiFill", "CreateLinearGradientFill": "ApiFill",
+            "CreateRadialGradientFill": "ApiFill", "CreatePatternFill": "ApiFill", "CreateBlipFill": "ApiFill",
+            "CreateStroke": "ApiStroke", "CreateRGBColor": "ApiRGBColor", "CreateColorFromRGB": "ApiColor",
+            "CreateColorByName": "ApiColor", "CreatePresetColor": "ApiPresetColor",
+            "CreateSchemeColor": "ApiSchemeColor", "CreateBullet": "ApiBullet", "CreateNumbering": "ApiBullet"
+        };
+        var RETURNS = {
+            "GetActiveSheet": "ApiWorksheet", "GetSheet": "ApiWorksheet", "AddSheet": "ApiWorksheet",
+            "GetSheets": "#ARR:ApiWorksheet",
+            "GetRange": "ApiRange", "GetRangeByNumber": "ApiRange", "GetUsedRange": "ApiRange",
+            "GetCells": "ApiRange", "GetCols": "ApiRange", "GetRows": "ApiRange",
+            "GetSelection": "ApiRange", "GetActiveCell": "ApiRange",
+            "GetEntireColumn": "ApiRange", "GetEntireRow": "ApiRange", "GetCurrentRegion": "ApiRange",
+            "GetAreas": "ApiRange", "GetItem": "ApiRange", "GetOffset": "ApiRange",
+            "GetRefersToRange": "ApiRange",
+            "GetComment": "ApiComment", "GetCharacters": "ApiCharacters", "GetFont": "ApiFont",
+            "GetContent": "ApiDocumentContent", "GetDocContent": "ApiDocumentContent",
+            "GetElement": "ApiParagraph", "GetParaPr": "ApiParaPr", "GetLastRunWithText": "ApiRun",
+            "GetDefName": "ApiName",
+            "GetAllShapes": "#ARR:ApiShape", "GetAllCharts": "#ARR:ApiChart",
+            "GetAllImages": "#ARR:ApiImage", "GetAllOleObjects": "#ARR:ApiOleObject",
+            "GetAllDrawings": "#ARR:ApiDrawing",
+            "AddChart": "ApiChart", "AddShape": "ApiShape", "AddImage": "ApiImage",
+            "AddOleObject": "ApiOleObject", "AddWordArt": "ApiDrawing",
+            "CreateRun": "ApiRun", "CreateParagraph": "ApiParagraph", "CreateTextPr": "ApiTextPr",
+            "CreateNoFill": "ApiFill", "CreateSolidFill": "ApiFill", "CreateLinearGradientFill": "ApiFill",
+            "CreateRadialGradientFill": "ApiFill", "CreatePatternFill": "ApiFill", "CreateBlipFill": "ApiFill",
+            "CreateStroke": "ApiStroke", "CreateRGBColor": "ApiRGBColor", "CreateColorFromRGB": "ApiColor",
+            "CreateColorByName": "ApiColor", "CreatePresetColor": "ApiPresetColor",
+            "CreateSchemeColor": "ApiSchemeColor", "CreateBullet": "ApiBullet", "CreateNumbering": "ApiBullet"
+        };
+        var SKIP = { push: 1, join: 1, indexOf: 1, slice: 1, substring: 1, substr: 1, toString: 1, trim: 1,
+            replace: 1, split: 1, toUpperCase: 1, toLowerCase: 1, charAt: 1, charCodeAt: 1, sort: 1,
+            map: 1, filter: 1, reduce: 1, forEach: 1, includes: 1, find: 1, findIndex: 1, keys: 1,
+            values: 1, entries: 1, has: 1, get: 1, set: 1, parse: 1, stringify: 1, concat: 1, shift: 1,
+            pop: 1, splice: 1, reverse: 1, every: 1, some: 1, match: 1, test: 1, exec: 1, call: 1,
+            apply: 1, bind: 1, floor: 1, round: 1, abs: 1, min: 1, max: 1, pow: 1, sqrt: 1, random: 1,
+            now: 1, padStart: 1, padEnd: 1, repeat: 1, length: 1, log: 1, error: 1, warn: 1 };
+        var out = [];
+        var seen = {};
+        var varMap = {};
+        var re = /([A-Za-z_$][A-Za-z0-9_$]*)?\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+        var m;
+        while ((m = re.exec(scan)) !== null) {
+            var recv = m[1] || "";
+            var name = m[2];
+            if (SKIP[name]) continue;
+            var before = scan.slice(Math.max(0, m.index - 600), m.index);
+            var cut = Math.max(before.lastIndexOf(";"), before.lastIndexOf("\n"),
+                               before.lastIndexOf("}"), before.lastIndexOf("{"));
+            var stmt = (cut >= 0) ? before.slice(cut + 1) : before;
+            var cls;
+            if (recv === "Api") {
+                cls = "Api";
+            } else if (recv && varMap[recv]) {
+                cls = varMap[recv];
+            } else {
+                cls = "Unknown";
+                var best = -1;
+                var bestCls = null;
+                for (var prod in PRODUCERS) {
+                    var idx = stmt.lastIndexOf(prod);
+                    if (idx > best) { best = idx; bestCls = PRODUCERS[prod]; }
+                }
+                if (best >= 0) cls = bestCls;
+            }
+            var key = cls + "." + name;
+            if (!seen[key]) { seen[key] = 1; out.push(key); }
+            if (out.length >= 50) break;
+            // привязка переменных: если этот вызов — ПОСЛЕДНИЙ в стейтменте вида
+            // `var X = ...` / `X = ...`, то X получает класс ВОЗВРАТА вызова
+            var fwdFrom = m.index + m[0].length;
+            var fwd = scan.slice(m.index);
+            var semi = fwd.indexOf(";", 1);
+            var nl = fwd.indexOf("\n", 1);
+            var stmtEnd = Math.min(semi === -1 ? fwd.length : semi,
+                                   nl === -1 ? fwd.length : nl);
+            var tail = scan.slice(fwdFrom, m.index + stmtEnd);
+            var nextCall = /[.]([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/.exec(tail);
+            if (!nextCall) {
+                var ret = RETURNS[name];
+                if (ret) {
+                    var vm = /var\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/.exec(stmt);
+                    var am = /([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/.exec(stmt);
+                    var varName = vm ? vm[1] : (am ? am[1] : null);
+                    if (varName && varName !== "function" && varName !== "return") {
+                        varMap[varName] = (ret.indexOf("#ARR:") === 0) ? ret.slice(5) : ret;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
     // Проверка типа входа: не строка — фиксируем фактический тип,
     // пустая строка — тоже ошибка, исполнять нечего.
     if (typeof code !== "string") {
@@ -182,6 +349,9 @@ function R7Executor(code) {
             JSON.stringify(result);
             response.value = (result === undefined) ? null : result;
         } catch (e3) { /* несериализуемо — value не включаем */ }
+        // автокопилка: список методов, встреченных в коде команды, идёт в мост —
+        // мост ведёт библиотеку r7_api (методы без файла — заготовки в папку New)
+        response.methods = extractMethods(code);
         return response;
     } catch (e) {
         // Текст ошибки формирует сам документ — передаём как есть,
@@ -190,6 +360,24 @@ function R7Executor(code) {
     }
 }
 
+// v26.48.1 (2026.11.24): МЕХАНИЗМ АВТОКОПИЛКИ (по заданию пользователя).
+//   Версия переведена на схему X.Y.Z (год-неделя): 26.48.1 заменяет 1.1.3.
+//   После успешного исполнения команды R7Executor разбирает код команды
+//   (extractMethods) и выделяет методы с привязкой к классу объекта:
+//   (0) перед разбором код очищается от строк и комментариев (stripStrings) —
+//   методы внутри строк-литералов не считаются вызовами;
+//   (1) карта переменных: если вызов — последний в стейтменте `var X = ...`,
+//   X привязывается к классу возврата (GetRange -> ApiRange, GetContent ->
+//   ApiDocumentContent и т. д.); (2) для каждого вызова `.Метод(...)` класс
+//   берётся из приёмника-переменной, иначе — последний производитель в
+//   текущем стейтменте (Api., GetRange(...), GetActiveSheet(), AddShape(...)
+//   и т. п.), иначе Unknown. Встроенные функции JS (push, join, charAt,
+//   stringify и пр.) и хелперы Алисы отфильтрованы. Список уникальных строк
+//   "Класс.Метод" (до 50 на команду) попадает в ответ полем methods; мост
+//   по нему ведёт библиотеку r7_api: метод без файла в Tested/NotWork/New
+//   получает заготовку в New со статусом "не тестировалось" (bridge v26.48.1).
+//   Прочая логика исполнителя (обёртка (function(){...})(), BUILTINS,
+//   value/info, describeError) сохранена без изменений.
 // Лог изменений:
 // v1.0.0 (2026.11.23): первая версия. Исполнитель команд Р7-Офиса: setCellColor
 //   (покраска ячейки через Builder API) и NormalizeCell (кириллица -> латиница).
