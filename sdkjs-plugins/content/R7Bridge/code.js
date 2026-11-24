@@ -1,8 +1,8 @@
-// Версия 26.48.15 от 24.11.2026
+// Версия 26.48.16 от 24.11.2026
 // Название файла при выдаче в чат code.js
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "26.48.15";
+    var PLUGIN_VERSION = "26.48.16";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -162,6 +162,7 @@
         ensureHideSysStyle();
         var line = document.createElement("div");
         line.textContent = ts() + " " + msg;
+        if (msg.indexOf("\n") !== -1) line.style.whiteSpace = "pre-line";
         line.style.margin  = "0";
         line.style.padding = "0";
         line.style.color = kind === "in"     ? LOG_COLOR_IN :
@@ -329,7 +330,17 @@
                 var t = JSON.parse(ev.data);
                 if (t !== null && typeof t === "object" && !isServiceMessage(t)) kind = "in";
             } catch (e) { /* обычный текст — системное сообщение */ }
-            log("входящее: " + fmtJson(ev.data), kind);
+            // v26.48.16: для команд документу (R7-Office) вместо полной обёртки
+            // { url, method, body } в лог выводится только суть — цепочки вызовов
+            // методов API, каждая с новой строки. Техническая информация не
+            // теряется: она остаётся в суточных логах моста. Если вызовы найти
+            // не удалось — выводится прежняя полная запись.
+            var shown = "входящее: " + fmtJson(ev.data);
+            if (kind === "in") {
+                var ess = essenceFromMessage(ev.data);
+                if (ess.length > 0) shown = ess.join("\n");
+            }
+            log(shown, kind);
             routeMessage(ev.data);
         };
         window.__r7bridge_ws = ws;
@@ -362,6 +373,148 @@
     // Данные берёт из распарсенного объекта t (или строки); при необходимости
     // распаковывает обёртку моста {url, method, body} — так же, как это делает
     // routeMessage. Отдаёт true/false.
+    // ── v26.48.16: «суть» входящей команды в логе ──────────────────────────
+    // Мост доставляет команду в обёртке { url, method, body }, и раньше в
+    // чёрное окно лога падала она целиком (url, requestId, doc и весь код
+    // одной строкой). Теперь для команд адресату R7-Office в лог выводится
+    // ТОЛЬКО суть — цепочки вызовов методов API, каждая с новой строки.
+    // Техническая информация не теряется: мост пишет её в свои суточные
+    // логи (brLogPath). Логика команд, ответов и передачи не менялась.
+
+    // unwrapIncoming(data): распаковывает обёртку моста и возвращает команду
+    // адресату R7-Office (или null — это не команда документу)
+    function unwrapIncoming(data) {
+        var msg;
+        try { msg = JSON.parse(data); } catch (e) { return null; }
+        if (msg && msg.body) {
+            if (typeof msg.body === "string") {
+                try { msg = JSON.parse(msg.body); } catch (e2) { return null; }
+            } else if (typeof msg.body === "object" && msg.body !== null) {
+                msg = msg.body;
+            }
+        }
+        return (msg && msg.target && normMarker(msg.target) === "r7-office" &&
+                typeof msg.code === "string") ? msg : null;
+    }
+
+    // extractCalls(code): собирает из кода цепочки вызовов методов вида
+    // Api.GetActiveSheet().GetRange('A1').SetValue('текст') — с корректным
+    // балансом скобок (вложенные вызовы внутри аргументов сохраняются) и
+    // пропуском строковых литералов и комментариев. Отбираются только цепочки,
+    // где корень И каждый метод начинаются с заглавной буквы (стиль Р7 API) —
+    // локальные вспомогательные (r.push, T(...), e.stack) в суть не попадают.
+    // Возвращает массив строк в порядке появления в коде.
+    function extractCalls(code) {
+        var src = String(code || "");
+        var out = [];
+        var i = 0, n = src.length;
+        function isIdChar(c) {
+            return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
+                   (c >= "0" && c <= "9") || c === "_" || c === "$";
+        }
+        // пропустить строковый литерал, вернуть позицию после закрывающей кавычки
+        function skipString(pos) {
+            var q = src[pos];
+            pos++;
+            while (pos < n) {
+                if (src[pos] === "\\") { pos += 2; continue; }
+                if (src[pos] === q) { return pos + 1; }
+                pos++;
+            }
+            return pos;
+        }
+        // прочитать сбалансированную группу скобок начиная с "(";
+        // вернёт позицию после закрывающей скобки или -1 при сбое
+        function skipGroup(pos) {
+            var depth = 0;
+            while (pos < n) {
+                var ch = src[pos];
+                if (ch === "'" || ch === '"' || ch === "`") { pos = skipString(pos); continue; }
+                if (ch === "/" && src[pos + 1] === "/") {
+                    while (pos < n && src[pos] !== "\n") pos++;
+                    continue;
+                }
+                if (ch === "/" && src[pos + 1] === "*") {
+                    pos += 2;
+                    while (pos + 1 < n && !(src[pos] === "*" && src[pos + 1] === "/")) pos++;
+                    pos += 2;
+                    continue;
+                }
+                if (ch === "(") depth++;
+                else if (ch === ")") {
+                    depth--;
+                    if (depth === 0) return pos + 1;
+                }
+                pos++;
+            }
+            return -1;
+        }
+        function isWs(ch) { return ch === " " || ch === "\n" || ch === "\t" || ch === "\r"; }
+        function skipWs(pos) { while (pos < n && isWs(src[pos])) pos++; return pos; }
+        while (i < n) {
+            var c = src[i];
+            if (c === "'" || c === '"' || c === "`") { i = skipString(i); continue; }
+            if (c === "/" && src[i + 1] === "/") {
+                while (i < n && src[i] !== "\n") i++;
+                continue;
+            }
+            if (c === "/" && src[i + 1] === "*") {
+                i += 2;
+                while (i + 1 < n && !(src[i] === "*" && src[i + 1] === "/")) i++;
+                i += 2;
+                continue;
+            }
+            // имя идентификатора (не начинается с цифры)
+            if (isIdChar(c) && !(c >= "0" && c <= "9")) {
+                var j = i;
+                while (j < n && isIdChar(src[j])) j++;
+                var word = src.slice(i, j);
+                // цепочки собираем только от корня с заглавной буквы (Api.*)
+                if (word[0] >= "A" && word[0] <= "Z") {
+                    var k = skipWs(j);
+                    if (src[k] === ".") {
+                        var ok = true, pos = k;
+                        while (true) {
+                            if (src[pos] !== ".") { ok = false; break; }
+                            pos++;
+                            var m0 = pos;
+                            while (pos < n && isIdChar(src[pos])) pos++;
+                            if (pos === m0) { ok = false; break; }
+                            var mname = src.slice(m0, pos);
+                            // методы Р7 API — с заглавной (GetRange, SetValue…)
+                            if (!(mname[0] >= "A" && mname[0] <= "Z")) { ok = false; break; }
+                            var p3 = skipWs(pos);
+                            if (src[p3] !== "(") { ok = false; break; }
+                            var e3 = skipGroup(p3);
+                            if (e3 < 0) { ok = false; break; }
+                            pos = e3;
+                            var p4 = skipWs(pos);
+                            if (src[p4] === ".") { pos = p4; continue; }
+                            break;
+                        }
+                        if (ok) {
+                            out.push(src.slice(i, pos));
+                            i = pos;
+                            continue;
+                        }
+                    }
+                }
+                i = j;
+                continue;
+            }
+            i++;
+        }
+        return out;
+    }
+
+    // essenceFromMessage(data): список строк-вызовов для лога; пустой массив,
+    // если сообщение не команда документу или вызовы не найдены
+    function essenceFromMessage(data) {
+        var msg = unwrapIncoming(data);
+        if (!msg) return [];
+        return extractCalls(msg.code);
+    }
+
     function isServiceMessage(t) {
         var msg = t;
         if (typeof msg === "string") {
@@ -1280,3 +1433,17 @@
 //   статуса (по запросу пользователя). styleLog() теперь задаёт явно
 //   el.style.fontSize = "11px" (как в setStatus) — раньше размер лога не
 //   задавался и наследовался из index.html, поэтому был крупнее статуса.
+// 26.48.16 (2026.11.24): «суть» входящей команды в логе (по запросу
+//   пользователя). Для команд адресату R7-Office вместо полной обёртки
+//   («входящее: url:/cmd, method:POST, body: ...») в чёрное окно лога
+//   выводятся только цепочки вызовов методов API, каждая с новой строки,
+//   например: Api.GetActiveSheet().GetRange('A1').SetValue('привет, это Алиса').
+//   Добавлены функции: unwrapIncoming (распаковка обёртки моста),
+//   extractCalls (извлечение цепочек вызовов: корректный баланс скобок,
+//   пропуск строковых литералов и комментариев; отбор — корень и методы
+//   с заглавной буквы, стиль Р7 API), essenceFromMessage (сборка списка).
+//   Если вызовы не найдены — выводится прежняя полная запись (страховка).
+//   Многострочные записи: log() ставит whiteSpace:pre-line, таймстамп —
+//   только на первой строке. ЛОГИКА КОМАНД, ОТВЕТОВ И ПЕРЕДАЧИ ИНФОРМАЦИИ
+//   НЕ МЕНЯЛАСЬ: routeMessage, executeCode, sendResult не тронуты;
+//   техническая строка по-прежнему попадает в суточные логи моста.
