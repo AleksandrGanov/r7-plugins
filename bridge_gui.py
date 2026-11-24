@@ -1,45 +1,50 @@
-# Версия 26.48.13 от 24.11.2026
+﻿# Версия 26.48.18 от 24.11.2026
 # Название файла при выдаче в чат bridge_gui.py
 
 # -*- coding: utf-8 -*-
-"""
+r"""
 R7 Bridge — простая морда:
-  - кнопка "Закрыть"
-  - поле статуса (запущен бридж или нет)
+  - кнопки запуска / остановки / перезапуска службы R7Bridge через nssm
+  - поле статуса: опрос каждую секунду, зелёный "в работе", красный "остановлен"
   - чёрное поле лога с вертикальной прокруткой
-  - выпадающий список с логами из папки Logs
-
-Защита от закрытия при ошибке:
-  - любая ошибка запуска печатается в консоль и дописывается в
-    Logs/error_traceback.txt, консоль ждёт нажатия Enter;
-  - ошибки в работающем окне показываются отдельным окном,
-    программа не закрывается.
+  - выпадающий список с логами из C:\r7bridge\logs
 """
 
+from __future__ import annotations
+
+import ctypes
+import os
 import subprocess
 import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+# Защищённый импорт tkinter: если модуля нет, печатается понятное сообщение
+# и консоль ждёт Enter — вместо невнятного падения.
+try:
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext, messagebox
+except ImportError:
+    tk = None
+    print("Не найден модуль tkinter. Установите Python с компонентом 'tcl/tk and IDLE'.")
+    input("Нажмите Enter для выхода...")
+    sys.exit(1)
 
 # Настройки путей и параметров опроса. BASE_DIR — папка, где лежит скрипт
-# (или _MEIPASS при сборке в exe). LOGS_DIR — папка с логами рядом с ним,
-# ERROR_LOG — файл, куда дописываются тексты ошибок.
+# (или _MEIPASS при сборке в exe). LOGS_DIR — общая папка логов моста,
+# ERROR_LOG — файл, куда дописываются все необработанные ошибки морды.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-LOGS_DIR = BASE_DIR / "Logs"
+LOGS_DIR = Path(r"C:\r7bridge\logs")
 ERROR_LOG = LOGS_DIR / "error_traceback.txt"
 
-# Имя процесса бриджа. Менять под реальное имя запускаемого файла бриджа.
+# Служба моста: полный путь к nssm.exe (работает из любой папки, PATH не нужен),
+# имя службы и имя процесса бриджа для проверки статуса.
+NSSM_PATH = r"C:\r7bridge\nssm.exe"
+SERVICE_NAME = "R7Bridge"
 PROCESS_NAME = "r7bridge.exe"
 
-REFRESH_MS = 3000  # период опроса статуса, мс
-
-# Версия файла: печатается при запуске в консоли, чтобы было видно,
-# что запущен именно новый файл, а не старая копия.
-FILE_VERSION = "26.48.13"
+REFRESH_MS = 1000  # период опроса статуса, мс
 
 # Проверяет, запущен ли процесс бриджа. Ищет PROCESS_NAME среди процессов
 # через psutil, при его отсутствии — через tasklist. Возвращает True/False.
@@ -73,65 +78,99 @@ def read_log_file(path: Path) -> str:
             continue
     return path.read_text(encoding="utf-8", errors="replace")
 
-# Дописывает текст ошибки в Logs/error_traceback.txt с датой и временем.
-# Вызывается при ошибке запуска и при ошибке внутри окна. Запись в файл
-# не должна мешать показу ошибки, поэтому проблемы записи глушатся.
-def write_error_log(text: str) -> None:
+# Прячет окно консоли: морда запускается без чёрного окна, остаётся только GUI.
+# Если консоли нет (запуск через pythonw) — ничего не делает.
+def hide_console() -> None:
     try:
-        ERROR_LOG.parent.mkdir(exist_ok=True)
-        stamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        with ERROR_LOG.open("a", encoding="utf-8") as f:
-            f.write(f"\n=== {stamp} ===\n{text}\n")
-    except OSError:
+        kernel32 = ctypes.windll.kernel32
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            kernel32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
         pass
 
-# Ставит обработчик ошибок tkinter на главное окно: любая ошибка в колбэках
-# (кнопки, таймер) печатается в консоль, дописывается в error_traceback.txt
-# и показывается отдельным окном. Программу не закрывает.
-def install_error_handlers(root: tk.Tk) -> None:
-    def _on_error(exc_type, exc_value, exc_tb):
-        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        print(text)
-        write_error_log(text)
-        try:
-            messagebox.showerror("Ошибка bridge_gui", text[:4000])
-        except Exception:
-            pass  # окно сообщения не открылось — текст уже в консоли и в файле
+# Проверяет, видимо ли окно консоли. Нужно, чтобы ожидание Enter в конце
+# работало только при видимой консоли: спрятанную консоль ждать бессмысленно.
+def console_visible() -> bool:
+    try:
+        kernel32 = ctypes.windll.kernel32
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return False
+        return bool(kernel32.IsWindowVisible(hwnd))
+    except Exception:
+        return True
 
-    root.report_callback_exception = _on_error
+# Дописывает traceback ошибки в ERROR_LOG с датой и временем.
+# Папка логов создаётся при необходимости. Сбой записи не мешает работе.
+def append_error_log(err: str) -> None:
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        with open(ERROR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n[{stamp}] Ошибка морды:\n{err}\n")
+    except Exception:
+        pass
 
-# Точка входа: создаёт папку Logs (если её нет), главное окно tkinter,
-# ставит обработчик ошибок окна и запускает цикл обработки событий.
-def main():
-    LOGS_DIR.mkdir(exist_ok=True)
-    root = tk.Tk()
-    install_error_handlers(root)
-    BridgeGui(root)
-    root.mainloop()
+# Показывает окно с ошибкой. Используется, когда исключение случилось
+# до создания главного окна или вне его callback'ов.
+def show_error_box(err: str) -> None:
+    if tk is None:
+        return
+    try:
+        r = tk.Tk()
+        r.withdraw()
+        messagebox.showerror("R7 Bridge — ошибка", err[:4000], parent=r)
+        r.destroy()
+    except Exception:
+        pass
 
-# Класс главного окна: статус бриджа, выбор лога, чёрное поле лога,
-# кнопка "Закрыть". Управляет опросом статуса по таймеру.
+# Обработчик ошибок внутри работающего окна (callback'и tkinter):
+# показывает окно с текстом ошибки и пишет её в лог. Программа НЕ закрывается
+# и продолжает работать — закрыть окно может только пользователь.
+def report_callback_exception(exc_type, exc_val, exc_tb) -> None:
+    err = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))
+    append_error_log(err)
+    try:
+        messagebox.showerror("R7 Bridge — ошибка", err[:4000])
+    except Exception:
+        pass
+
+# Класс главного окна: статус бриджа, кнопки службы, выбор лога,
+# чёрное поле лога, кнопка "Закрыть". Управляет опросом статуса по таймеру.
 class BridgeGui:
     # Строит интерфейс: верхняя строка со статусом и кнопкой "Закрыть",
-    # строка выбора лога с комбобоксом и кнопкой "Обновить",
+    # строка кнопок службы, строка выбора лога с комбобоксом и кнопкой "Обновить",
     # чёрное поле лога с прокруткой. Запускает первое обновление данных.
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("R7 Bridge")
         root.geometry("860x560")
         root.minsize(640, 420)
+        root.report_callback_exception = report_callback_exception
 
         # Верхняя строка: статус + кнопка "Закрыть"
         top = ttk.Frame(root, padding=(10, 10, 10, 5))
         top.pack(fill="x")
 
         self.status_label = tk.Label(
-            top, text="Статус: …", font=("Segoe UI", 11, "bold"), anchor="w"
+            top, text="Статус: ...", font=("Segoe UI", 11, "bold"), anchor="w"
         )
         self.status_label.pack(side="left")
 
         close_btn = ttk.Button(top, text="Закрыть", command=root.destroy)
         close_btn.pack(side="right")
+
+        # Строка кнопок службы: команды выполняются через nssm с полным путём
+        svc = ttk.Frame(root, padding=(10, 0, 10, 0))
+        svc.pack(fill="x")
+
+        ttk.Button(svc, text="Запустить", width=14,
+                   command=lambda: self.run_service_command("start", "Запуск")).pack(side="left")
+        ttk.Button(svc, text="Остановить", width=14,
+                   command=lambda: self.run_service_command("stop", "Остановка")).pack(side="left", padx=(8, 0))
+        ttk.Button(svc, text="Перезапустить", width=14,
+                   command=lambda: self.run_service_command("restart", "Перезапуск")).pack(side="left", padx=(8, 0))
 
         # Средняя строка: выбор лога
         picker = ttk.Frame(root, padding=(10, 5))
@@ -152,7 +191,7 @@ class BridgeGui:
             bg="#1e1e1e", fg="#d4d4d4",
             insertbackground="#d4d4d4",
             font=("Consolas", 10),
-            state="disabled",       # только чтение
+            state="disabled",
             wrap="none",
         )
         self.log_view.pack(fill="both", expand=True, padx=10, pady=(5, 10))
@@ -160,6 +199,28 @@ class BridgeGui:
         self.refresh_log_list()
         self.update_status()
         self._schedule_status()
+
+    # Выполняет команду службы через nssm с полным путём: start, stop или restart.
+    # Окно консоли не открывается (CREATE_NO_WINDOW), результат показывается
+    # окном-сообщением, статус обновляется сразу, не дожидаясь следующего тика.
+    # nssm.exe не найден — сообщение об ошибке вместо падения.
+    def run_service_command(self, action: str, title: str) -> None:
+        if not os.path.isfile(NSSM_PATH):
+            messagebox.showerror("Ошибка", f"nssm.exe не найден: {NSSM_PATH}")
+            return
+        try:
+            proc = subprocess.run(
+                [NSSM_PATH, action, SERVICE_NAME],
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            out = (proc.stdout or "").strip()
+            err = (proc.stderr or "").strip()
+            text = out or err or "команда выполнена без вывода"
+            messagebox.showinfo(title, text)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось выполнить команду:\n{e}")
+        self.update_status()
 
     # Обновляет метку статуса: читает результат is_bridge_running()
     # и красит надпись в зелёный (в работе) или красный (остановлен).
@@ -179,7 +240,7 @@ class BridgeGui:
         self.update_status()
         self._schedule_status()
 
-    # Сканирует папку Logs, заполняет комбобокс именами файлов
+    # Сканирует папку логов, заполняет комбобокс именами файлов
     # (свежие сверху по дате изменения) и открывает самый свежий лог.
     def refresh_log_list(self):
         files = []
@@ -220,39 +281,55 @@ class BridgeGui:
         self.log_view.see("1.0")
         self.log_view.config(state="disabled")
 
+# Точка входа: создаёт папку логов (если её нет), прячет консоль,
+# создаёт главное окно tkinter и запускает цикл обработки событий.
+def main():
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    hide_console()
+    root = tk.Tk()
+    BridgeGui(root)
+    root.mainloop()
+
 if __name__ == "__main__":
-    # Сразу видно в консоли, что запущен именно этот файл и версия в шапке.
-    print(f"Запущен файл: bridge_gui.py, версия {FILE_VERSION}")
+    # Запуск под полной защитой: любое исключение печатается в консоль,
+    # дописывается в C:\r7bridge\logs\error_traceback.txt и показывается окном.
+    # Окно само не закрывается никогда — закрыть его может только пользователь.
     try:
         main()
     except BaseException:
-        # Любая ошибка запуска (нет tkinter, нет прав и т.д.) попадает сюда:
-        # печатается в консоль и дописывается в Logs/error_traceback.txt.
-        text = traceback.format_exc()
-        print(text)
-        write_error_log(text)
+        err = traceback.format_exc()
+        print(err)
+        append_error_log(err)
+        show_error_box(err)
     finally:
-        # Консоль ждёт Enter в любом случае: и после ошибки,
-        # и после нормального закрытия окна. Ошибка не «мелькает».
-        try:
-            input("Нажмите Enter, чтобы закрыть окно...")
-        except (EOFError, OSError):
-            pass
+        # Ждём Enter только при видимой консоли: после скрытия консоли
+        # невидимое ожидание оставило бы висящий процесс.
+        if console_visible():
+            try:
+                input("Нажмите Enter для выхода...")
+            except Exception:
+                pass
 
 # Лог изменений:
-# 26.48.13, 24.11.2026 — Исправлена версия в шапке: раньше файл выдавался с прежним
-#   номером в первой строке, из-за чего казалось, что файл не менялся. Версия теперь
-#   синхронизирована в трёх местах: строка 1 шапки, константа FILE_VERSION и строка
-#   запуска в консоли. По правилам оформления добавлена вторая строка «Название файла
-#   при выдаче в чат bridge_gui.py». Код защиты от закрытия не менялся.
-# 26.48.5, 24.11.2026 — Защита от закрытия: запуск обёрнут в try/except BaseException,
-#   в finally стоит input() — консоль ждёт Enter после ошибки и после нормального
-#   закрытия окна. Ошибки внутри окна перехватываются через report_callback_exception:
-#   показ окна с текстом, программа не закрывается. Текст ошибки дописывается в
-#   Logs/error_traceback.txt. При запуске печатается строка с версией файла.
-# 26.48.4, 24.11.2026 — Строки лога изменений в конце файла закомментированы (раньше
-#   стояли обычным текстом без #, Python падал с SyntaxError до запуска любой защиты).
-#   Добавлена запись ошибок в Logs/error_traceback.txt и обработчик ошибок окна.
-# 26.48.1, 24.11.2026 — Первое оформление файла по правилам: добавлена строка версии
-#   в начале, описание к каждой функции и методу, лог изменений в конце, убраны
-#   двойные пустые строки. Код не менялся.
+#   26.48.1 (24.11.2026): Первое оформление файла по правилам: добавлена строка версии
+#     в начале, описание к каждой функции и методу, лог изменений в конце, убраны
+#     двойные пустые строки. Код не менялся.
+#   26.48.14 (24.11.2026): Морда защищена от закрытия: весь запуск в try/except
+#     BaseException, при ошибке traceback печатается, пишется в error_traceback.txt
+#     и показывается окном; окно не закрывается само. Ошибки внутри окна перехватываются
+#     через report_callback_exception. Импорт tkinter защищён. Незакомментированный лог
+#     в конце файла (причина падения с SyntaxError) закомментирован.
+#   26.48.15 (24.11.2026): Папка логов исправлена: LOGS_DIR = C:\r7bridge\logs (была
+#     Logs рядом со скриптом). Папка создаётся автоматически при запуске и перед
+#     записью ошибки. Путь файла ошибок — C:\r7bridge\logs\error_traceback.txt.
+#   26.48.16 (24.11.2026): Добавлены три кнопки службы: "Запустить", "Остановить",
+#     "Перезапустить" (nssm start / stop / restart R7Bridge). Опрос статуса ускорен
+#     до 1 секунды (REFRESH_MS = 1000). Состояние службы контролируется постоянным
+#     опросом статуса, отдельной кнопки нет.
+#   26.48.17 (24.11.2026): Команды службы переведены на полный путь C:\r7bridge\nssm.exe
+#     (работают из любой папки, PATH не нужен). Консоль прячется при запуске морды
+#     (hide_console), ожидание Enter работает только при видимой консоли, при закрытии
+#     окна программа завершается сразу.
+#   26.48.18 (24.11.2026): Ещё раз выверены команды службы: в коде не осталось ни одного
+#     вызова nssm без полного пути — все обращения идут через NSSM_PATH =
+#     C:\r7bridge\nssm.exe (start / stop / restart R7Bridge). Других изменений нет.

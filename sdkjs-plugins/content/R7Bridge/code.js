@@ -1,7 +1,7 @@
-// Версия 26.48.12 (2026.11.24)
+// Версия 26.48.13 (2026.11.24)
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "26.48.12";
+    var PLUGIN_VERSION = "26.48.13";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
@@ -23,6 +23,12 @@
     // время последней ПРИНЯТОЙ команды (мс epoch). Игнорируемые команды
     // отсчёт НЕ сбрасывают. 0 — команда ещё не приходила.
     var lastCmdTime = 0;
+
+    // имя документа этого экземпляра плагина (v26.48.13): сохраняется при
+    // hello (getDocName) и обновляется сервисной командой get_doc_name.
+    // Уходит в мост с каждым сообщением type:"result" (поле doc) — по нему
+    // мост сопоставляет ответ с конкретным документом.
+    var currentDocName = "";
 
     // цвет ШРИФТА строк лога: входящее / исходящее / системное / ошибочное
     var LOG_COLOR_IN  = "#3f9b3f"; // светло-зелёный
@@ -235,7 +241,8 @@
         var finish = function (name) {
             if (done) return;
             done = true;
-            cb(String(name || "").trim());
+            currentDocName = String(name || "").trim();
+            cb(currentDocName);
         };
         var fallback = function () {
             var n = "", de = null;
@@ -458,6 +465,20 @@
         } else if (name === "get_min_gap") {
             sendResult("plugin", true, requestId,
                        { ok: true, info: "минимальное время между командами: " + minGapSec + " сек", value: minGapSec });
+        } else if (name === "get_doc_name") {
+            // v26.48.13: свежее имя документа (getDocName — callCommand,
+            // Api.GetFullName). Имя запоминается в currentDocName и сразу
+            // уходит в мост сообщением type:"doc" — тот обновляет
+            // client.docName для /docnames и адресации POST /cmd.
+            getDocName(function (fresh) {
+                currentDocName = fresh;
+                var ws = window.__r7bridge_ws;
+                if (ws && ws.readyState === WebSocket.OPEN && fresh) {
+                    sendWS(ws, { type: "doc", docName: fresh }, "sys");
+                }
+                sendResult("plugin", true, requestId,
+                           { ok: true, info: "имя документа: " + (fresh || "нет"), value: fresh });
+            });
         } else {
             sendResult("plugin", false, requestId,
                        { ok: false, error: "неизвестная сервисная команда: " + name });
@@ -564,7 +585,8 @@
         var ws = window.__r7bridge_ws;
         if (ws && ws.readyState === WebSocket.OPEN) {
             sendWS(ws, { type: "result", action: action, ok: ok,
-                         requestId: requestId || "", result: result || null }, "sys");
+                         requestId: requestId || "", doc: currentDocName || "",
+                         result: result || null }, "sys");
         }
     }
 
@@ -1226,3 +1248,16 @@
 //   {ok:false, error:"сервисное сообщение без имени команды"} — тишины больше нет;
 //   (3) ветка «команда не распознана» теперь пишет в лог и тело сообщения
 //   (развернутый json, до 300 знаков) — сразу видно, что именно пришло.
+// 26.48.13 (2026.11.24): МУЛЬТИДОКУМЕНТ (по заданию пользователя: работа с
+//   несколькими подключёнными документами одновременно). Правки:
+//   (1) имя документа хранится в переменной уровня плагина currentDocName —
+//   заполняется в getDocName (при hello и при каждом вызове);
+//   (2) каждое сообщение type:"result" уходит в мост с полем doc (имя
+//   документа) — мост сохраняет его вместе с результатом, Алиса видит,
+//   от какого документа пришёл ответ (bridge v26.48.8);
+//   (3) новая сервисная команда Plugin get_doc_name: отвечает свежим именем
+//   документа (getDocName через callCommand, Api.GetFullName) и отправляет
+//   мосту type:"doc" — мост обновляет client.docName (hello шлётся один раз,
+//   поэтому переименованный/открытый позже документ иначе держал бы в мосту
+//   устаревшее имя). Executor (executor.js) не менялся — код и так
+//   исполняется в контексте конкретного документа.
