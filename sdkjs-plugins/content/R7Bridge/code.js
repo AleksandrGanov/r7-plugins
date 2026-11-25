@@ -1,8 +1,8 @@
-// Версия 26.48.19 от 25.11.2026
+// Версия 26.48.20 от 25.11.2026
 // Название файла при выдаче в чат code.js
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "26.48.19";
+    var PLUGIN_VERSION = "26.48.20";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     // Код подключения к мосту (v26.48.19): персональный для этой машины, его
@@ -832,7 +832,131 @@
         }
     }
 
-    // ===== НАСТРОЙКА "МИНИМАЛЬНОЕ ВРЕМЯ МЕЖДУ КОМАНДАМИ" =====
+        // ===== МОНИТОР СОХРАНЕНИЯ (v26.48.20) =====
+    // События сохранения onForceSave в контексте редактора: слияние изменений в
+    // файл облачного документа не даёт редактору подтверждений (статус
+    // "Сохранение..." висит, флаг modified застревает), а сам факт сохранения был
+    // невидим. Теперь факт наблюдаем:
+    //   (1) обёртка onForceSave ставится в контекст редактора через callCommand;
+    //       каждое событие пишется в localStorage редактора — кольцевой буфер
+    //       r7b_fs_log (последние 60 записей), это единственный надёжный канал
+    //       между контекстом редактора и плагином (разные origin, DOM и
+    //       postMessage из песочницы исполнителя недоступны);
+    //   (2) плагин опрашивает буфер раз в SAVE_POLL_MS и каждое новое событие:
+    //       показывает в собственном логе панели и пересылает текстом в мост по
+    //       WS — мост пишет строку в лог ("сообщение не-JSON от клиента: ..."),
+    //       морда показывает её в живом логе.
+    // Формат строки: R7Save: start|success|fail|end ЧЧ:ММ:СС.ммм (type=N).
+    // Установка — один раз на документ-сессию (метка __r7fsWrapped на объекте
+    // CoAuthoringApi; при переоткрытии документа объект новый — обёртка ставится
+    // заново). Первый опрос после установки не пересылает старые события
+    // (курсор по длине буфера). Логика команд, ответов и передачи информации
+    // НЕ МЕНЯЛАСЬ: routeMessage, executeCode, sendResult не тронуты.
+    var SAVE_LOG_KEY = "r7b_fs_log";
+    var SAVE_CURSOR = null;      // сколько событий уже переслано; null — буфер ещё не читали
+    var SAVE_POLL_MS = 1500;     // период опроса буфера
+    var savePollBusy = false;
+    var savePollTimer = null;
+
+    // код обёртки: исполняется в контексте редактора (callCommand)
+    var SAVE_INSTALL_FN =
+        "try {" +
+        "  var co = Api.CoAuthoringApi;" +
+        "  if (!co) return 'нет CoAuthoringApi';" +
+        "  if (co.__r7fsWrapped) return 'уже обёрнуто';" +
+        "  var orig = co.onForceSave;" +
+        "  co.onForceSave = function (ev) {" +
+        "    try {" +
+        "      var d = ev || {};" +
+        "      var rec = { t: Date.now(), type: d.type, start: d.start, success: d.success };" +
+        "      var b = [];" +
+        "      try { b = JSON.parse(localStorage.getItem('r7b_fs_log') || '[]') || []; } catch (e) { b = []; }" +
+        "      b.push(rec);" +
+        "      if (b.length > 60) b = b.slice(-60);" +
+        "      localStorage.setItem('r7b_fs_log', JSON.stringify(b));" +
+        "    } catch (e2) {}" +
+        "    return (typeof orig === 'function') ? orig.apply(this, arguments) : undefined;" +
+        "  };" +
+        "  co.__r7fsWrapped = true;" +
+        "  try { localStorage.setItem('r7b_fs_log', '[]'); } catch (e3) {}" +
+        "  return 'обёрнуто';" +
+        "} catch (err) { return 'ошибка: ' + err.message; }";
+
+    var SAVE_POLL_FN =
+        "var b = [];" +
+        "try { b = JSON.parse(localStorage.getItem('" + SAVE_LOG_KEY + "') || '[]') || []; } catch (e) { b = []; }" +
+        "return JSON.stringify(b);";
+
+    function savePhaseText(e) {
+        if (e.success !== undefined) return e.success ? "success" : "fail";
+        if (e.start !== undefined) return e.start ? "start" : "end";
+        return "событие";
+    }
+
+    function fmtSaveTime(ms) {
+        var d = new Date(ms);
+        var p = function (n, w) { n = String(n); while (n.length < w) n = "0" + n; return n; };
+        return p(d.getHours(), 2) + ":" + p(d.getMinutes(), 2) + ":" +
+               p(d.getSeconds(), 2) + "." + p(d.getMilliseconds(), 3);
+    }
+
+    function forwardSaveLine(line) {
+        log(line, "sys");                        // панель плагина
+        var ws = window.__r7bridge_ws;           // мост -> лог моста -> морда
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(line); } catch (e) {}
+        }
+    }
+
+    function pollSaveEvents() {
+        if (savePollBusy) return;
+        if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) return;
+        savePollBusy = true;
+        try {
+            window.Asc.plugin.callCommand(new Function(SAVE_POLL_FN), false, true, function (res) {
+                savePollBusy = false;
+                var b = [];
+                try { b = JSON.parse(res) || []; } catch (e) { return; }
+                if (SAVE_CURSOR === null) { SAVE_CURSOR = b.length; return; } // первое чтение — старое не пересылаем
+                if (b.length < SAVE_CURSOR) SAVE_CURSOR = 0;                  // буфер сброшен (новый документ)
+                for (var i = SAVE_CURSOR; i < b.length; i++) {
+                    var e = b[i];
+                    forwardSaveLine("R7Save: " + savePhaseText(e) + " " + fmtSaveTime(e.t) +
+                                    " (type=" + e.type + ")");
+                }
+                SAVE_CURSOR = b.length;
+            });
+        } catch (e) {
+            savePollBusy = false;
+        }
+    }
+
+    function installSaveWatch(tryNo) {
+        var n = tryNo || 0;
+        if (!window.Asc || !window.Asc.plugin || !window.Asc.plugin.callCommand) {
+            log("монитор сохранения: callCommand недоступен — обёртку не поставить", "syserr");
+            return;
+        }
+        try {
+            window.Asc.plugin.callCommand(new Function(SAVE_INSTALL_FN), false, true, function (res) {
+                var r = String(res || "");
+                if (r.indexOf("обёрнуто") === 0 || r.indexOf("уже обёрнуто") === 0) {
+                    log("монитор сохранения: обёртка onForceSave установлена, события start/success идут в мост", "sys");
+                    SAVE_CURSOR = null;
+                    if (!savePollTimer) savePollTimer = setInterval(pollSaveEvents, SAVE_POLL_MS);
+                } else if (r.indexOf("нет CoAuthoringApi") === 0 && n < 5) {
+                    // редактор ещё не готов — повторяем пару раз
+                    setTimeout(function () { installSaveWatch(n + 1); }, 1500);
+                } else {
+                    log("монитор сохранения: не установлен (" + r + ") — события сохранения этого документа не наблюдаются", "syserr");
+                }
+            });
+        } catch (e) {
+            log("монитор сохранения: ошибка установки: " + e.message, "syserr");
+        }
+    }
+
+// ===== НАСТРОЙКА "МИНИМАЛЬНОЕ ВРЕМЯ МЕЖДУ КОМАНДАМИ" =====
     // Постоянное хранение — в файле на диске (C:\r7bridge\settings\R7Bridge.json),
     // его пишет МОСТ: плагин сам не имеет доступа к файловой системе (браузерная
     // песочница iframe). Плагин общается с мостом по HTTP:
@@ -1244,6 +1368,7 @@
         loadGapFromBridge(); // 2) файл моста — перекроет localStorage, если есть
         log("загружен, версия модуля: " + PLUGIN_VERSION, "sys");
         log("минимальное время между командами: " + minGapSec + " сек (localStorage/дефолт; файл моста уточнит)", "sys");
+        installSaveWatch();   // монитор сохранения (v26.48.20)
         setStatus("отключен", "off");
         setTimeout(runSelfTests, 500);
     }
@@ -1568,4 +1693,28 @@
 //   сбросили файл settings/plugPairToken.txt): resetToken() забывает код,
 //   следующий клик TEST спрашивает его заново.
 //   (4) Логика команд, ответов и передачи информации не менялась: routeMessage,
+//   executeCode, sendResult, extractCalls и прочее не тронуты.
+// 26.48.20 (2026.11.25): МОНИТОР СОХРАНЕНИЯ — события onForceSave в морду.
+//   Проблема: у облачного документа слияние изменений в файл не даёт редактору
+//   подтверждений — статус "Сохранение..." висит вечно, флаг modified застревает
+//   (asc_isDocumentModified=true даже в чистой сессии), а сам факт сохранения
+//   был невидим. Решение: факт сохранения стал наблюдаемым.
+//   (1) installSaveWatch() ставит через callCommand обёртку на
+//       Api.CoAuthoringApi.onForceSave в контексте редактора. Каждое событие
+//       пишется в localStorage редактора (кольцевой буфер r7b_fs_log, последние
+//       60 записей) — у редактора и плагина разные origin, прямого
+//       postMessage из песочницы исполнителя нет, поэтому буфер+опрос.
+//   (2) Плагин опрашивает буфер раз в 1,5 с (pollSaveEvents) и каждое новое
+//       событие: показывает в логе панели и пересылает ТЕКСТОМ в мост по WS.
+//       Мост пишет строку в свой лог ("сообщение не-JSON от клиента: ..."),
+//       морда показывает её в живом логе. Формат: R7Save: start|success|fail
+//       ЧЧ:ММ:СС.ммм (type=N). Метка времени — момент события в контексте
+//       редактора, не момент пересылки.
+//   (3) Защита от дублей: метка __r7fsWrapped на объекте CoAuthoringApi — один
+//       раз на документ-сессию; при переоткрытии документа объект новый и
+//       обёртка ставится заново. Первый опрос не пересылает старые события
+//       (курсор SAVE_CURSOR по длине буфера); сброс буфера — курсор в 0.
+//   (4) Если CoAuthoringApi нет (не облако) — до 5 повторов установки, потом
+//       честная запись в лог; события таких документов не наблюдаются.
+//   Логика команд, ответов и передачи информации не менялась: routeMessage,
 //   executeCode, sendResult, extractCalls и прочее не тронуты.
