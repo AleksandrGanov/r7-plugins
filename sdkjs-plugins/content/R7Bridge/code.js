@@ -1,11 +1,17 @@
-// Версия 26.48.16 от 24.11.2026
+// Версия 26.48.19 от 25.11.2026
 // Название файла при выдаче в чат code.js
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "26.48.18";
+    var PLUGIN_VERSION = "26.48.19";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
-    var TOKEN = "14ee059503d41af353dfb78a5b65426efa8f2db7f52d1f572563666243dc478b";
+    // Код подключения к мосту (v26.48.19): персональный для этой машины, его
+    // печатает мост в своём логе строкой «код подключения плагина: ...».
+    // В исходниках кода НЕТ (прежний публичный токен мост больше не принимает):
+    // вводится один раз по кнопке ON, дальше берётся из localStorage браузера.
+    var TOKEN_STORE_KEY = "r7bridgePlugToken";
+    var TOKEN = "";          // текущий код; пусто — ещё не введён/не прочитан
+    var tokenAsked = false;  // спрашивали ли уже в этой сессии страницы
     var BTN_GAP = "6px"; // три промежутка между четырьмя кнопками
     var BTN_H   = "20px"; // единая высота всех кнопок (ON/OFF/TEST/CLEAR и Save) И поля
                           // интервала: Save равен полю с цифрами, остальные — Save (v26.48.8)
@@ -219,13 +225,22 @@
     // серый, но класс sys-line такой строке НЕ назначается, поэтому скрытие через
     // контейнерный класс log-hide-sys на неё не действует — галочка «скрывать
     // системные сообщения» в любом положении эти строки показывает (v26.48.11).
+    // v26.48.19: 401 от моста означает, что код подключения не принят — код
+    // сбрасывается, следующий клик TEST спросит его заново.
     function checkStatus() {
         log("Info: опрашиваю мост...", "systest");
         fetch(BRIDGE_HTTP + "/status", {
-            headers: { "X-Proxy-Token-R7": TOKEN },
+            headers: { "X-Proxy-Token-R7": getToken() },
             cache: "no-store"
         })
-        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function (r) {
+            if (r.status === 401) {
+                resetToken();
+                throw new Error("HTTP 401: код подключения не принят");
+            }
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+        })
         .then(function (data) {
             setStatus(data && data.online ? "подключен" : "отключен",
                       data && data.online ? "ok" : "off");
@@ -282,6 +297,59 @@
         setTimeout(fallback, 2000);
     }
 
+    // ===== КОД ПОДКЛЮЧЕНИЯ (v26.48.19) =====
+    // Мост принимает только два ключа: серверный токен Алисы (внешние вызовы) и
+    // код подключения этой машины — он генерируется мостом и лежит в его логе.
+    // Плагин хранит код в localStorage браузера, спрашивает один раз.
+
+    // читает сохранённый код из localStorage (пустая строка — не сохранён)
+    function readStoredToken() {
+        try { return localStorage.getItem(TOKEN_STORE_KEY) || ""; } catch (e) { return ""; }
+    }
+
+    // забывает код: следующий getToken() спросит заново (мост ответил 401)
+    function resetToken() {
+        TOKEN = "";
+        tokenAsked = false;
+        try { localStorage.removeItem(TOKEN_STORE_KEY); } catch (e) {}
+        log("код подключения сброшен — нажмите TEST и введите новый (он в логе моста: «код подключения плагина»)", "syserr");
+    }
+
+    // отдаёт код подключения: из памяти, из localStorage или спрашивает у
+    // пользователя (один раз за страницу). Пустая строка — код не введён.
+    // Вызывается только из действий пользователя (ON/TEST): там браузер
+    // показывает диалог, при загрузке страницы он был бы подавлен.
+    function getToken() {
+        if (TOKEN) return TOKEN;
+        TOKEN = readStoredToken();
+        if (TOKEN) return TOKEN;
+        if (tokenAsked) return "";
+        tokenAsked = true;
+        var v = "";
+        try {
+            v = window.prompt(
+                "R7 Bridge: код подключения этой машины.\n" +
+                "Он напечатан в логе моста строкой «код подключения плагина: ...» " +
+                "(лог виден в окне Bridge). Вставьте его сюда — код запомнится.", "");
+        } catch (e) { v = ""; }
+        v = String(v || "").replace(/\s+/g, "");
+        if (v) {
+            TOKEN = v;
+            try { localStorage.setItem(TOKEN_STORE_KEY, v); } catch (e) {}
+            log("код подключения сохранён в браузере", "sys");
+        } else {
+            tokenAsked = false; // следующий клик ON/TEST спросит снова
+            log("код подключения не введён — мост не примет запросы плагина", "syserr");
+        }
+        return TOKEN;
+    }
+
+    // тихий вариант для фоновых запросов (настройки паузы при загрузке):
+    // код из памяти или localStorage, БЕЗ диалога.
+    function currentToken() {
+        return TOKEN || readStoredToken();
+    }
+
     function connect() {
         var old = window.__r7bridge_ws;
         if (old) {
@@ -289,9 +357,15 @@
             window.__r7bridge_ws = null;
             setStatus("отключен", "off");
         }
+        var token = getToken();
+        if (!token) {
+            log("WS: подключение отменено — нет кода подключения", "syserr");
+            setStatus("нет кода подключения", "err");
+            return;
+        }
         log("WS: подключаюсь к " + BRIDGE_WS, "sys");
         var ws;
-        try { ws = new WebSocket(BRIDGE_WS + "?token=" + TOKEN); }
+        try { ws = new WebSocket(BRIDGE_WS + "?token=" + encodeURIComponent(token)); }
         catch (e) {
             log("WS: ошибка создания сокета: " + e.message, "syserr");
             setStatus("ошибка подключения", "err");
@@ -777,7 +851,7 @@
     // остаётся значение из localStorage/дефолта, ошибка фиксируется в логе.
     function loadGapFromBridge() {
         fetch(BRIDGE_HTTP + "/settings", {
-            headers: { "X-Proxy-Token-R7": TOKEN },
+            headers: { "X-Proxy-Token-R7": currentToken() },
             cache: "no-store"
         })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
@@ -805,7 +879,7 @@
     function saveGapToBridge() {
         fetch(BRIDGE_HTTP + "/settings", {
             method: "POST",
-            headers: { "X-Proxy-Token-R7": TOKEN, "Content-Type": "application/json" },
+            headers: { "X-Proxy-Token-R7": currentToken(), "Content-Type": "application/json" },
             body: JSON.stringify({ minGapSec: minGapSec })
         })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
@@ -1477,3 +1551,21 @@
 //   наследовал цвет сообщения (зелёный/красный/серый/жёлтый). На тёмном
 //   фоне (#1e1e1e) белый читается. Многострочные записи: таймстамп по-прежнему
 //   только на первой строке. clearLog, styleLog и прочие не менялись.
+// 26.48.19 (2026.11.25): БЕЗОПАСНОСТЬ — код подключения вместо публичного
+//   токена (по результатам аудита: токен лежал в этом файле, который раздаётся
+//   с GitHub Pages, поэтому действовал у любого, кто открыл исходник).
+//   (1) Публичный TOKEN удалён из кода. Добавлены TOKEN_STORE_KEY,
+//   readStoredToken(), resetToken(), getToken(): код хранится в localStorage
+//   (ключ r7bridgePlugToken) и спрашивается у пользователя один раз через
+//   prompt по кнопке ON — мост печатает его в логе строкой «код подключения
+//   плагина: ...». Ввод не блокирует загрузку страницы: диалог вызывается
+//   только из действия пользователя (ON/TEST), где браузер его не подавляет.
+//   (2) Все обращения к мосту берут код через getToken()/currentToken():
+//   /status (TEST) и WS-подключение (ON) спрашивают код, если его нет;
+//   фоновая загрузка/сохранение паузы (GET/POST /settings) — тихо, без
+//   диалога. Пустой код — подключение отменяется с понятной строкой лога.
+//   (3) Ответ 401 на TEST означает, что код не принят (сменили на машине или
+//   сбросили файл settings/plugPairToken.txt): resetToken() забывает код,
+//   следующий клик TEST спрашивает его заново.
+//   (4) Логика команд, ответов и передачи информации не менялась: routeMessage,
+//   executeCode, sendResult, extractCalls и прочее не тронуты.
