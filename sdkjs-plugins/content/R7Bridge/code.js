@@ -1,8 +1,8 @@
-// Версия 26.48.20 от 25.11.2026
+// Версия 26.48.21 от 25.11.2026
 // Название файла при выдаче в чат code.js
 
 (function (window, undefined) {
-    var PLUGIN_VERSION = "26.48.20";
+    var PLUGIN_VERSION = "26.48.21";
     var BRIDGE_HTTP = "http://127.0.0.1:8791";
     var BRIDGE_WS   = "ws://127.0.0.1:8791/";
     // Код подключения к мосту (v26.48.19): персональный для этой машины, его
@@ -351,6 +351,7 @@
     }
 
     function connect() {
+        stopReconnectScan(); // ручное подключение отменяет активное сканирование
         var old = window.__r7bridge_ws;
         if (old) {
             try { old.onclose = null; old.close(); } catch (e) {}
@@ -394,8 +395,13 @@
             });
         };
         ws.onclose = function (e) {
-            log("WS: закрыт, код " + e.code, "syserr");
+            var manual = !!window.__r7bridge_ws_off;
+            window.__r7bridge_ws_off = false;
+            log("WS: закрыт, код " + e.code +
+                (manual ? " (ручное отключение)" : " — обрыв связи с мостом"),
+                manual ? "sys" : "syserr");
             setStatus("отключен", "off");
+            if (!manual) startReconnectScan();
         };
         ws.onerror = function () {
             log("WS: ошибка соединения", "syserr");
@@ -432,11 +438,109 @@
         var ws = window.__r7bridge_ws;
         if (ws) {
             try { ws.onclose = null; } catch (e) {}
+            window.__r7bridge_ws_off = true; // ручное отключение — автосканирование не запускать
             try { ws.close(); } catch (e) {}
             window.__r7bridge_ws = null;
         }
+        stopReconnectScan(); // кнопка OFF останавливает и активное сканирование
         log("WS: отключаюсь от " + BRIDGE_WS, "sys");
         setStatus("отключен", "off");
+    }
+
+    // ===== АВТОПЕРЕПОДКЛЮЧЕНИЕ ПОСЛЕ ПЕРЕЗАГРУЗКИ МОСТА (v26.48.21) =====
+    // Симптом: мост перезапускался (nssm/служба) — WS обрывается, плагин остаётся
+    // отключенным до ручного ON. Поведение теперь зависит от состояния в момент
+    // обрыва:
+    //   * если в момент обрыва плагин был ПОДКЛЮЧЕН (обрыв не по кнопке OFF и не
+    //     штатное закрытие) — плагин фоново сканирует GET /status раз в
+    //     RECONNECT_POLL_MS; как только мост ответил 200 — сканирование
+    //     останавливается и выполняется connect(). ВАЖНО: живость моста = факт
+    //     HTTP 200, а НЕ поле online: online считается по числу WS-клиентов и
+    //     после перезапуска моста равен false, пока хоть кто-то не подключился
+    //     (если требовать online=true — плагин ждал бы подключения сам себя);
+    //   * если в момент обрыва плагин был ОТКЛЮЧЕН кнопкой OFF — ничего не
+    //     сканируем: reconnect не меняет решение пользователя.
+    // Механика различения: disconnect() ставит __r7bridge_ws_off=true ПЕРЕД
+    // close() и гасит onclose; любой дошедший onclose от текущего сокета —
+    // обрыв (код 1006 при убийстве процесса, 1000 при штатном завершении моста
+    // через nssm stop/restart — поэтому код не проверяется, обрыв есть обрыв).
+    // Если пользователь нажал ON во время сканирования — connect() снимает
+    // сканирование первым действием (двойного подключения не будет).
+    // Лог не спамит: «сканирую мост: ...» раз в RECONNECT_LOG_EVERY_MS.
+    // Ответ 401 = код не принят (на мосту сменили код) — resetToken() и
+    // сканирование останавливается: следующий ON спросит код заново.
+    // Логика команд, ответов и передачи информации не менялась.
+    var RECONNECT_POLL_MS = 2000;
+    var RECONNECT_LOG_EVERY_MS = 30000;
+    var reconnectTimer = null;
+    var reconnectActive = false;
+    var reconnectTries = 0;
+    var reconnectLastLog = 0;
+
+    function stopReconnectScan() {
+        if (reconnectTimer) { try { clearInterval(reconnectTimer); } catch (e) {} reconnectTimer = null; }
+        reconnectActive = false;
+    }
+
+    function startReconnectScan() {
+        if (reconnectActive) return;
+        if (!currentToken()) {
+            log("автоподключение: кода подключения нет — сканирование не запускается (введите код кнопкой ON)", "syserr");
+            return;
+        }
+        reconnectActive = true;
+        reconnectTries = 0;
+        reconnectLastLog = 0;
+        log("автоподключение: мост недоступен — сканирую раз в " + (RECONNECT_POLL_MS / 1000) +
+            " с, подключусь автоматически, когда мост оживёт", "sys");
+        reconnectTimer = setInterval(scanBridgeAlive, RECONNECT_POLL_MS);
+        scanBridgeAlive(); // первый опрос сразу, без ожидания интервала
+    }
+
+    function scanBridgeAlive() {
+        if (!reconnectActive) return;
+        if (window.__r7bridge_ws && window.__r7bridge_ws.readyState === WebSocket.OPEN) {
+            stopReconnectScan();
+            return;
+        }
+        reconnectTries++;
+        if (!currentToken()) {
+            log("автоподключение: кода подключения нет — сканирование остановлено (введите код кнопкой ON)", "syserr");
+            stopReconnectScan();
+            return;
+        }
+        fetch(BRIDGE_HTTP + "/status", {
+            headers: { "X-Proxy-Token-R7": currentToken() },
+            cache: "no-store"
+        })
+        .then(function (r) {
+            if (!reconnectActive) return;
+            if (r.status === 401) {
+                stopReconnectScan();
+                resetToken();
+                log("автоподключение: код не принят (401) — сканирование остановлено, введите новый код кнопкой ON", "syserr");
+                return null;
+            }
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+        })
+        .then(function (data) {
+            if (!reconnectActive) return;
+            if (data) {
+                stopReconnectScan();
+                log("автоподключение: мост оживил — подключаюсь", "sys");
+                connect();
+            }
+        })
+        .catch(function (e) {
+            if (!reconnectActive) return;
+            var now = Date.now();
+            if (now - reconnectLastLog > RECONNECT_LOG_EVERY_MS) {
+                reconnectLastLog = now;
+                log("сканирую мост: недоступен (" + (e && e.message ? e.message : "сеть") +
+                    ", попытка " + reconnectTries + ")", "sys");
+            }
+        });
     }
 
     // нормализация маркера адресата: trim + lowercase. Протокол полностью
@@ -1718,3 +1822,29 @@
 //       честная запись в лог; события таких документов не наблюдаются.
 //   Логика команд, ответов и передачи информации не менялась: routeMessage,
 //   executeCode, sendResult, extractCalls и прочее не тронуты.
+// 26.48.21 (2026.11.25): АВТОПЕРЕПОДКЛЮЧЕНИЕ ПОСЛЕ ПЕРЕЗАГРУЗКИ МОСТА.
+//   Проблема: мост перезапускался (nssm/служба) — WS обрывался, плагин оставался
+//   отключенным до ручного ON. Поведение теперь зависит от состояния в момент
+//   обрыва:
+//   (1) плагин был ПОДКЛЮЧЕН: обрыв WS (не по кнопке OFF) запускает фоновое
+//       сканирование GET /status раз в 2 с (RECONNECT_POLL_MS). Как только мост
+//       ответил HTTP 200 — сканирование останавливается и вызывается connect().
+//       Живость моста = факт HTTP 200, а НЕ поле online: online считается по
+//       числу WS-клиентов и после перезапуска моста false, пока хоть кто-то не
+//       подключился (требовать online — плагин ждал бы подключения сам себя).
+//   (2) плагин был ОТКЛЮЧЕН кнопкой OFF: ничего не сканируем и не подключаемся —
+//       reconnect не меняет решение пользователя. disconnect() ставит флаг
+//       __r7bridge_ws_off ПЕРЕД close() и гасит onclose; кнопка OFF также
+//       останавливает уже идущее сканирование. Ручной ON во время сканирования
+//       снимает его первым действием connect().
+//   (3) Различение обрыва: дошедший onclose от текущего сокета — обрыв (1006 при
+//       убийстве процесса; 1000 при штатном завершении моста nssm stop/restart,
+//       поэтому код не проверяется). Обрывки старых сокетов игнорируются
+//       (connect() гасит их onclose до замены).
+//   (4) Лог: «автоподключение: мост недоступен — сканирую...» при старте,
+//       «сканирую мост: недоступен (..., попытка N)» раз в 30 с, «мост оживил —
+//       подключаюсь» при успехе. Ответ 401: resetToken() и остановка скана —
+//       код подключения сменили, следующий ON спросит его заново. Кода нет —
+//       сканирование не запускается (без диалогов из фона).
+//   Логика команд, ответов и передачи информации не менялась: routeMessage,
+//   executeCode, sendResult, extractCalls и монитор сохранения не тронуты.
